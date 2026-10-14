@@ -24,6 +24,19 @@
 
 ---
 
+## 下载
+
+**不想折腾环境？直接去 [Releases](https://github.com/whfy2003/jm-download-assistant/releases/latest) 下载现成的：**
+
+| 下载哪个 | 大小 | 适合谁 |
+| --- | --- | --- |
+| **JM下载助手-安装程序.exe** | 约 86 MB | 大多数人。双击安装，可自选安装位置与下载 / 收藏目录；自带运行环境，**无需安装 Python**；支持从系统「应用」里卸载 |
+| **JM下载助手-绿色版.zip** | 约 61 MB | 免安装。解压后双击里面的 `JM下载助手.exe` 即可用，整个文件夹可拷到 U 盘带走 |
+
+> 下载页：**https://github.com/whfy2003/jm-download-assistant/releases/latest**
+
+---
+
 ## 功能一览
 
 **下载页**
@@ -69,8 +82,8 @@
 ### 方式二：源码版
 
 ```bash
-git clone <本仓库地址>
-cd <仓库目录>
+git clone https://github.com/whfy2003/jm-download-assistant.git
+cd jm-download-assistant
 
 # 建虚拟环境并安装依赖
 python -m venv .venv
@@ -106,9 +119,10 @@ start-jm-web.cmd
 ├── JMComic-Crawler-Python/    上游项目源码（git submodule 或直接放入）
 ├── option.yml                 jmcomic 下载配置（域名、PDF 输出、cookies）
 ├── start-jm-web.cmd           启动脚本
-├── stop-jm-web.cmd            停止脚本
-└── releases/                  打包好的 exe（建议改用 GitHub Releases）
+└── stop-jm-web.cmd            停止脚本
 ```
+
+> 打包好的 exe 不放在仓库里，统一在 [Releases](https://github.com/whfy2003/jm-download-assistant/releases) 页面发布。
 
 > **注意**：`.venv/`、`_build/`、`_dist/`、`__pycache__/` 都不应提交，见 `.gitignore`。
 
