@@ -1,3 +1,5 @@
+#注意，本项目绝大部分代码组件来自AI生成，兼容性不可预见，恶性bug未知，请不要小头控制大头，谨慎部署
+
 # JM 下载助手（本地网页版）
 
 把 [JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python) 包装成「双击即用」的本地下载工具：
