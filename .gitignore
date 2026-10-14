@@ -1,0 +1,37 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---- 虚拟环境（体积大，不要提交）----
+.venv/
+venv/
+env/
+
+# ---- 打包产物（PyInstaller 中间文件）----
+_build/
+*.spec
+
+# 安装包/绿色版输出目录。
+# 安装包 exe（约 86MB）建议直接上传到 GitHub Releases，
+# 而不是提交进仓库；如确要提交，把下面这行注释掉。
+_dist/
+
+# ---- 运行时生成的数据（含本机绝对路径，不要提交）----
+settings.json
+downloads/
+logs/
+*.log
+
+# ---- 参考资料：只忽略体积大的逐页截图 ----
+# _reference/ 里的生成脚本（make_manual.py 等）建议保留
+_reference/pages/
+_download/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

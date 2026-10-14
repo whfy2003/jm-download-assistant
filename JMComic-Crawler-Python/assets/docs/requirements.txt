@@ -1,0 +1,6 @@
+mkdocs
+mkdocstrings[python]
+markdown-include
+mkdocs-material
+markdown-callouts
+commonX

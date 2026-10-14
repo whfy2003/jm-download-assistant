@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JM 下载助手</title>
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('jm-theme');
+        var q = new URLSearchParams(location.search).get('theme');
+        if (q === 'light' || q === 'dark') saved = q;
+        var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.setAttribute('data-theme', saved || (sysDark ? 'dark' : 'light'));
+      } catch (e) { }
+    })();
+  </script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="app">
+  <!-- 侧栏 -->
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="logo">JM</div>
+      <div class="brand-name">JM 下载助手<small>本地网页端</small></div>
+    </div>
+
+    <div class="nav-label">导航</div>
+    <a class="nav-item active" data-view="download">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3v12M7 11l5 5 5-5M5 20h14"/>
+      </svg>
+      下载
+    </a>
+    <a class="nav-item" data-view="favorites">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/>
+      </svg>
+      收藏
+    </a>
+    <a class="nav-item" data-view="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+      </svg>
+      设置
+    </a>
+
+    <div class="sidebar-foot">
+      <div class="kv">
+        <b>下载目录</b>
+        <code id="sb-pdf-path">{{ pdf_dir }}</code>
+        <div class="disk-bar" id="disk-pdf" data-disk="pdf" title="磁盘占用">
+          <span class="seg seg-dir"></span><span class="seg seg-other"></span><span class="seg seg-free"></span>
+        </div>
+      </div>
+      <div class="kv">
+        <b>收藏目录</b>
+        <code id="sb-fav-path">{{ fav_dir }}</code>
+        <div class="disk-bar" id="disk-fav" data-disk="fav" title="磁盘占用">
+          <span class="seg seg-dir"></span><span class="seg seg-other"></span><span class="seg seg-free"></span>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <div class="main">
+    <div class="topbar">
+      <div class="crumbs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+        </svg>
+        <span class="sep">/</span>
+        <code id="crumb-path">{{ pdf_dir }}</code>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="addr-pill" id="addr-pill" title="点击复制访问地址">
+        <span class="dot">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/>
+            <rect x="16" y="16" width="6" height="6" rx="1"/><path d="M12 8v4M5 16v-2a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v2"/>
+          </svg>
+        </span>
+        <span class="txt" id="addr-text">{{ addr }}</span>
+      </div>
+
+      <button class="btn btn-outline btn-icon" id="btn-theme" title="切换浅色 / 深色" aria-label="切换主题">
+        <svg id="theme-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="content">
+      <!-- ================= 视图：下载 ================= -->
+      <section class="view" id="view-download">
+        <div class="page-head">
+          <h1>下载</h1>
+          <p>输入本子编号开始下载，完成后自动合并为 PDF 保存到 <code id="head-pdf-dir">{{ pdf_dir }}</code></p>
+        </div>
+
+        <div class="grid">
+          <section class="card card-pad">
+            <div class="card-head"><h2>下载任务</h2></div>
+            <div class="card-desc">输入编号后开始下载。运行中会锁定按钮。</div>
+
+            <div class="field">
+              <label for="album-id">编号（纯数字）</label>
+              <div class="row">
+                <input id="album-id" class="input" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：422869">
+                <button id="btn-download" class="btn btn-primary">下载</button>
+              </div>
+            </div>
+
+            <div class="status-row">
+              <span>状态</span>
+              <span class="status">
+                <span id="status-text" class="badge">空闲</span>
+                <span id="spinner" class="spinner hidden" aria-hidden="true"></span>
+              </span>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="field">
+              <label for="dl-search-id">搜索下载记录（按编号）</label>
+              <div class="row">
+                <input id="dl-search-id" class="input" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：422869">
+                <button id="dl-btn-search" class="btn btn-outline">搜索</button>
+              </div>
+              <div class="row">
+                <button id="dl-btn-show-all" class="btn btn-outline grow">显示全部</button>
+                <button id="dl-btn-search-all" class="btn btn-outline grow">搜索全部</button>
+              </div>
+            </div>
+
+            <p class="hint" style="margin-top:12px">
+              搜索只会显示匹配编号的记录；点击「显示全部」恢复默认列表。<br>
+              点击「搜索」仅搜索最近 500 条记录；点击「搜索全部」将搜索所有记录，但会消耗更多时间。
+            </p>
+
+            <details class="runtime">
+              <summary>运行日志</summary>
+              <pre id="runtime-logs" class="runtime-logs">（暂无）</pre>
+            </details>
+
+            <button id="btn-open-folder" class="btn btn-ghost btn-block" style="margin-top:12px">打开下载文件夹</button>
+          </section>
+
+          <section class="card card-pad">
+            <div class="card-head">
+              <h2>下载记录</h2>
+              <div class="head-tools">
+                <span class="badge" id="dl-badge">全部记录</span>
+                <button class="btn btn-outline btn-sm" id="dl-refresh" title="重新读取日志">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                    <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/>
+                  </svg>
+                  刷新数据
+                </button>
+              </div>
+            </div>
+            <div class="card-desc">最新记录在最上面 · 单击文件用系统默认程序打开</div>
+            <div id="dl-records" class="records"></div>
+            <div id="dl-count" class="record-count"></div>
+          </section>
+        </div>
+      </section>
+
+      <!-- ================= 视图：收藏 ================= -->
+      <section class="view hidden" id="view-favorites">
+        <div class="page-head">
+          <h1>收藏</h1>
+          <p>收藏夹目录 <code id="head-fav-dir">{{ fav_dir }}</code> · 收藏时会从下载目录复制一份 PDF 进来，并写入 <code>jm_fav_log.txt</code></p>
+        </div>
+
+        <div class="warn-banner hidden" id="fav-warning"></div>
+
+        <div class="grid">
+          <section class="card card-pad">
+            <div class="card-head"><h2>收藏夹</h2></div>
+            <div class="card-desc">在「下载」页点击记录左侧的星标即可收藏到这里。</div>
+
+            <div class="field">
+              <label for="fav-search-id">搜索收藏记录（按编号）</label>
+              <div class="row">
+                <input id="fav-search-id" class="input" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：422869">
+                <button id="fav-btn-search" class="btn btn-outline">搜索</button>
+              </div>
+              <div class="row">
+                <button id="fav-btn-show-all" class="btn btn-outline grow">显示全部</button>
+                <button id="fav-btn-search-all" class="btn btn-outline grow">搜索全部</button>
+              </div>
+            </div>
+
+            <p class="hint" style="margin-top:12px">
+              收藏夹里已有的漫画会自动登记进日志（编号显示为 <b>-</b>），因此也能在这里查看和搜索。
+            </p>
+
+            <div class="divider"></div>
+
+            <div class="kv-block"><b>收藏目录</b><code id="fav-dir-text">{{ fav_dir }}</code></div>
+            <div class="kv-block"><b>收藏日志</b><code id="fav-log-text">{{ fav_log }}</code></div>
+
+            <button id="btn-open-fav" class="btn btn-ghost btn-block" style="margin-top:16px">打开收藏文件夹</button>
+          </section>
+
+          <section class="card card-pad">
+            <div class="card-head">
+              <h2>收藏记录</h2>
+              <div class="head-tools">
+                <span class="badge" id="fav-badge">全部记录</span>
+                <button class="btn btn-outline btn-sm" id="fav-refresh" title="重新读取日志">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                    <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/>
+                  </svg>
+                  刷新数据
+                </button>
+              </div>
+            </div>
+            <div class="card-desc">最新记录在最上面 · 单击文件用系统默认程序打开</div>
+            <div id="fav-records" class="records"></div>
+            <div id="fav-count" class="record-count"></div>
+          </section>
+        </div>
+      </section>
+
+      <!-- ================= 视图：设置 ================= -->
+      <section class="view hidden" id="view-settings">
+        <div class="page-head">
+          <h1>设置</h1>
+          <p>修改下载目录与收藏目录；保存时会自动把原目录里的内容迁移到新位置</p>
+        </div>
+
+        <div class="grid">
+          <section class="card card-pad">
+            <div class="card-head"><h2>目录设置</h2></div>
+            <div class="card-desc">请填绝对路径，例如 <code>E:\漫画\JM</code></div>
+
+            <div class="field">
+              <label for="set-pdf">下载目录（PDF 成品 + jm_log.txt）</label>
+              <input id="set-pdf" class="input" type="text" spellcheck="false" autocomplete="off">
+            </div>
+
+            <div class="field" style="margin-top:14px">
+              <label for="set-fav">收藏目录（收藏副本 + jm_fav_log.txt）</label>
+              <input id="set-fav" class="input" type="text" spellcheck="false" autocomplete="off">
+            </div>
+
+            <button id="btn-save-settings" class="btn btn-primary btn-block" style="margin-top:18px">保存并迁移内容</button>
+            <button id="btn-reset-settings" class="btn btn-ghost btn-block" style="margin-top:8px">恢复默认路径</button>
+
+            <p class="hint" style="margin-top:14px">
+              保存后会把原目录里的<b>所有文件与子文件夹</b>移动到新目录，并同步切换日志位置。<br>
+              同一磁盘内是瞬时改名；跨磁盘则先复制再删除，耗时取决于文件体积。<br>
+              新目录中若已存在同名文件，会跳过该文件（不覆盖）。
+            </p>
+          </section>
+
+          <section class="card card-pad">
+            <div class="card-head">
+              <h2>磁盘占用</h2>
+              <span class="badge" id="disk-drive">—</span>
+            </div>
+            <div class="card-desc">橙色＝该目录占用 · 紫色＝同盘其它占用 · 灰色＝可用空间</div>
+            <div id="disk-detail"></div>
+            <button class="btn btn-outline btn-block" id="btn-disk-refresh" style="margin-top:16px">重新统计</button>
+          </section>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- 悬停放大的磁盘占用指示条 -->
+<div id="disk-pop" class="disk-pop hidden">
+  <div class="disk-bar-fill">
+    <span class="seg seg-dir"></span><span class="seg seg-other"></span><span class="seg seg-free"></span>
+  </div>
+  <div class="disk-pop-legend">
+    <span id="disk-pop-title">—</span>
+    <span id="disk-pop-nums">—</span>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+  window.JM_PATHS = {
+    pdf: {{ pdf_dir|tojson }},
+    fav: {{ fav_dir|tojson }},
+    defaults: { pdf: {{ default_pdf|tojson }}, fav: {{ default_fav|tojson }} }
+  };
+</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

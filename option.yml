@@ -1,0 +1,60 @@
+# ============================================================
+# JMComic-Crawler-Python 部署配置（E:\JM web）
+# 文档: https://jmcomic.readthedocs.io/zh-cn/latest/
+# 说明: 这里只写覆盖默认值所需的配置项，其余走 jmcomic 默认值。
+# ============================================================
+
+# 开启日志输出
+log: true
+
+client:
+  # html = 网页端（效率高，但限制 IP 地区）/ api = 移动端 APP（不限 IP，兼容性好）
+  # 实测（2026-10-13，本机直连）：
+  #   html 端 → 403「ip地区禁止访问/爬虫被识别」（走本机 7888 代理同样 403）
+  #   api 端  → 正常返回本子详情
+  # 因此固定使用 api。若日后有可用的境外代理，可改回 html 以获得更高并发效率。
+  impl: api
+
+  # 请求失败重试次数
+  retry_times: 5
+
+  postman:
+    meta_data:
+      # 用户选择：直连，不使用代理
+      # 如果后续需要代理，改成: proxies: 127.0.0.1:7888
+      proxies: null
+
+      # 登录 cookies（可选）。少部分敏感题材需要登录才能看。
+      # 只需 AVS 一项，且必须与上面 impl 使用的域名一致。
+      cookies: null
+
+download:
+  # 磁盘上已存在的文件不重复下载
+  cache: true
+
+  image:
+    # JM 原图是混淆过的，需要还原
+    decode: true
+
+  threading:
+    # 同时下载的图片数（禁漫网页一次最多请求 50 张）
+    image: 30
+    # 同时下载的章节数
+    photo: 8
+
+# 文件存放规则：根目录 / 章节标题 / 图片文件
+# 这里是「图片工作区」：下载过程中图片先落在这里，合并成 PDF 后即被删除。
+# 最终成品 PDF 由下方 plugins.after_album 的 img2pdf 插件输出到 E:/漫画/JM。
+dir_rule:
+  base_dir: E:/JM web/downloads
+  rule: Bd / Ptitle
+
+plugins:
+  after_album:
+    # 整本合并为一个 PDF，输出到 E:\漫画\JM，文件名 = 本子标题
+    # 合并成功后删除工作区里的原始图片，实现「只保留 PDF」
+    - plugin: img2pdf
+      kwargs:
+        pdf_dir: E:/漫画/JM
+        filename_rule: Atitle
+        delete_original_file: true
