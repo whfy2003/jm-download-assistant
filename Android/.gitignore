@@ -1,0 +1,21 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# 签名文件与密码，绝不能提交
+/keystore
+*.jks
+*.keystore
+
+# 构建产物 / 截图草稿
+/dist
+/_ui*
+*.apk

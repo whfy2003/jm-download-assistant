@@ -1,0 +1,290 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  下载页（主页）
+
+  ┌─────────────────────────────┐
+  │         [ JM ]              │  ← 品牌区（紫色方块 + 名称 + 移动端）
+  │      JM 下载助手             │
+  │        移动端                │
+  │                             │
+  │    [ 编号输入框 ]            │
+  │  [预览封面] [开始下载]        │  ← 与输入框同高
+  │    状态 · 进度条             │
+  │  ┌───────────────────────┐  │  ← 输入已下载过的编号时出现
+  │  │ 缩略图 标题/编号/时间   │  │
+  │  └───────────────────────┘  │
+  ├─────────────────────────────┤
+  │ 运行日志            最后一行▴ │  ← 底部固定 56dp，点开是日志浮层
+  └─────────────────────────────┘
+
+  尺寸全部用 dp，主内容在剩余空间里垂直居中；日志面板是铺满整页的浮层，
+  只露出头部，所以展开/折叠不会移动主内容。
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <!-- 品牌区 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingTop="22dp">
+
+            <TextView
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:background="@drawable/bg_logo"
+                android:elevation="6dp"
+                android:fontFamily="sans-serif-medium"
+                android:gravity="center"
+                android:letterSpacing="0.02"
+                android:text="JM"
+                android:textColor="#FFFFFF"
+                android:textSize="27sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/app_name"
+                android:textColor="@color/text_primary"
+                android:textSize="20sp" />
+
+            <TextView
+                style="@style/Text.Caption"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="@string/brand_sub"
+                android:textSize="12.5sp" />
+        </LinearLayout>
+
+        <!-- 主内容：从屏幕约 1/3 处开始（上方留白 1 份、下方留白 2 份） -->
+        <Space
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingHorizontal="24dp">
+
+                <com.google.android.material.textfield.TextInputLayout
+                    android:id="@+id/til_album"
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:minHeight="68dp"
+                    android:hint="@string/hint_album_id"
+                    app:boxBackgroundColor="@color/bg"
+                    app:boxStrokeColor="@color/input_stroke"
+                    app:boxStrokeWidth="1.5dp"
+                    app:boxStrokeWidthFocused="2dp">
+
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/et_album_id"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:imeOptions="actionDone"
+                        android:includeFontPadding="false"
+                        android:inputType="number"
+                        android:maxLength="12"
+                        android:minHeight="60dp"
+                        android:paddingTop="14dp"
+                        android:paddingBottom="14dp"
+                        android:textSize="22sp" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="56dp"
+                    android:layout_marginTop="12dp"
+                    android:orientation="horizontal">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_preview"
+                        style="@style/Widget.Material3.Button.OutlinedButton"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_weight="1"
+                        android:text="@string/btn_preview"
+                        android:textSize="15sp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btn_download"
+                        android:layout_width="0dp"
+                        android:layout_height="match_parent"
+                        android:layout_marginStart="12dp"
+                        android:layout_weight="1"
+                        android:text="@string/btn_download"
+                        android:textSize="15sp"
+                        app:icon="@drawable/ic_nav_download"
+                        app:iconGravity="textStart"
+                        app:iconPadding="6dp"
+                        app:iconSize="18dp" />
+                </LinearLayout>
+
+                <!-- 状态 + 进度条：固定高度，出现/消失都不会让上面的组件位移 -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="86dp"
+                    android:layout_marginTop="14dp"
+                    android:gravity="center"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/tv_status"
+                            style="@style/Text.Caption"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_badge"
+                            android:paddingHorizontal="10dp"
+                            android:paddingVertical="3dp"
+                            android:text="@string/status_idle"
+                            android:textColor="@color/brand"
+                            android:textSize="11.5sp" />
+
+                        <TextView
+                            android:id="@+id/tv_task"
+                            style="@style/Text.Caption"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="8dp"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:text="" />
+                    </LinearLayout>
+
+                    <com.google.android.material.progressindicator.LinearProgressIndicator
+                        android:id="@+id/progress"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        app:indicatorColor="@color/brand"
+                        app:trackColor="@color/brand_light"
+                        app:trackCornerRadius="4dp"
+                        app:trackThickness="8dp" />
+                </LinearLayout>
+
+                <!-- 已下载时才出现 -->
+                <include
+                    android:id="@+id/album_card"
+                    layout="@layout/card_album_info" />
+        </LinearLayout>
+
+        <Space
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="2" />
+    </LinearLayout>
+
+    <!-- 日志面板（含底部 56dp 日志条） -->
+    <LinearLayout
+        android:id="@+id/log_sheet"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_sheet"
+        android:elevation="16dp"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:id="@+id/log_header"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="16dp">
+
+            <View
+                android:layout_width="3dp"
+                android:layout_height="16dp"
+                android:layout_marginEnd="9dp"
+                android:background="@drawable/bg_accent_bar" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/log_title"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/tv_log_count"
+                style="@style/Text.Caption"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_export_log"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="0dp"
+                android:paddingHorizontal="10dp"
+                android:text="@string/btn_export_log"
+                android:textSize="12sp" />
+
+            <ImageView
+                android:id="@+id/iv_log_arrow"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:contentDescription="@string/log_title"
+                android:src="@drawable/ic_chevron_up"
+                app:tint="@color/text_secondary" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/border" />
+
+        <ScrollView
+            android:id="@+id/sv_logs"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:background="@color/bg"
+            android:fillViewport="true"
+            android:paddingHorizontal="16dp"
+            android:paddingVertical="10dp"
+            android:scrollbars="vertical">
+
+            <TextView
+                android:id="@+id/tv_logs"
+                style="@style/Mono.Caption"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingExtra="3dp"
+                android:text="@string/log_empty"
+                android:textSize="10.5sp" />
+        </ScrollView>
+    </LinearLayout>
+
+</FrameLayout>

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 深色模式配色：同名覆盖 values/colors.xml，布局里的 @color/bg 等会自动跟随 -->
+<resources>
+    <color name="brand">#8B8BF0</color>
+    <color name="brand_dark">#6E6ED8</color>
+    <color name="brand_light">#26263A</color>
+
+    <color name="ok">#30C46F</color>
+    <color name="ok_light">#17301F</color>
+    <color name="warn">#F0B54A</color>
+    <color name="danger">#FF6369</color>
+
+    <color name="surface">#16161C</color>
+    <color name="surface_dark">#0F0F14</color>
+    <color name="bg">#0F0F14</color>
+    <color name="bg_dark">#0F0F14</color>
+    <color name="text_primary">#E6E6EF</color>
+    <color name="text_secondary">#A0A0B0</color>
+    <color name="text_muted">#6B7183</color>
+    <color name="border">#262A38</color>
+    <color name="border_strong">#4A5168</color>
+
+    <color name="seg_dir">#F59E0B</color>
+    <color name="seg_fav">#C79A4A</color>
+    <color name="seg_other">#8B8BF0</color>
+    <color name="seg_free">#2E2E3C</color>
+</resources>

@@ -1,0 +1,11 @@
+# 复制本文件为 local.properties 后填写。
+# local.properties 含本机路径与签名密码，已在 .gitignore 中排除，不要提交。
+
+# 1) Android SDK 路径（Android Studio 通常会自动生成这一行）
+sdk.dir=/path/to/Android/Sdk
+
+# 2) release 签名（keystore 文件不随仓库分发，请向项目维护者获取后放到 keystore/jm-release.jks）
+jm.storeFile=keystore/jm-release.jks
+jm.storePassword=
+jm.keyAlias=jm
+jm.keyPassword=

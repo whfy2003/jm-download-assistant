@@ -145,6 +145,18 @@ start-jm-web.cmd
 
 ---
 
+## Android 客户端（Android/）
+
+`Android/` 是同一套下载核心的 Android 移植版：用 Chaquopy 在进程内运行 Python
+（`jmcomic` + `jmcore`），界面用 Java（Material 3）重写，产出 APK。
+它和 Windows 端共享同一套 Python 业务逻辑，不跑 Flask、不起本地端口。
+
+- 构建：`cd Android` 后执行 `.\gradlew.bat :app:assembleRelease`（细节见 `Android/README.md`）
+- 签名：`keystore/` 与 `local.properties` 不随仓库分发，模板见 `Android/local.properties.example`
+- 发布包：Releases 里的 `JM下载助手-Android-v1.02.apk`
+
+---
+
 ## 目录结构
 
 ```
@@ -155,6 +167,7 @@ start-jm-web.cmd
 ├── LICENSE
 ├── .gitignore
 │
+├── Android/                   Android 客户端（Chaquopy + Java，产出 APK）
 ├── webui/                     网页端（本项目的核心代码）
 │   ├── app.py                 后端：Flask 路由、记录解析、目录迁移、磁盘占用、下载进度、AVS、检查更新
 │   ├── launcher.py            启动器：首次运行向导、启动服务、卸载程序

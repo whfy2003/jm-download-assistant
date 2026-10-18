@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JM 下载助手</string>
+
+    <string name="tab_download">下载</string>
+    <string name="tab_local">本机</string>
+    <string name="tab_favorites">收藏</string>
+    <string name="tab_settings">设置</string>
+
+    <string name="hint_album_id">本子编号（纯数字）</string>
+    <string name="btn_download">开始下载</string>
+    <string name="btn_preview">预览封面</string>
+    <string name="btn_export_log">导出</string>
+    <string name="btn_wipe_all">清除所有下载数据</string>
+    <string name="btn_search_recent">最近 500</string>
+    <string name="btn_search_all">全部</string>
+    <string name="btn_show_all">显示全部</string>
+    <string name="btn_refresh">刷新</string>
+
+    <string name="status_idle">空闲</string>
+    <string name="status_running">运行中</string>
+    <string name="status_ok">已完成</string>
+    <string name="status_failed">上次任务失败</string>
+
+    <!-- 下载页 -->
+    <string name="download_brand">JM 下载助手</string>
+    <string name="download_subtitle">输入本子编号，下载后自动合并为 PDF</string>
+    <string name="log_title">运行日志</string>
+    <string name="log_empty">（暂无运行日志）</string>
+
+    <!-- 本机页 -->
+    <string name="local_title">本机</string>
+    <string name="local_subtitle">已下载到本机的漫画 · 点一下用系统阅读器打开</string>
+    <string name="hint_search_id">按编号搜索</string>
+
+    <string name="empty_records">没有匹配的记录</string>
+    <string name="empty_favorites">收藏夹是空的</string>
+
+    <string name="menu_open">打开</string>
+    <string name="menu_export">导出到“下载”</string>
+    <string name="menu_delete">删除文件与记录</string>
+    <string name="menu_unfavorite">取消收藏</string>
+
+    <string name="settings_paths">存储位置</string>
+    <string name="settings_disk">磁盘占用</string>
+    <string name="settings_runtime">下载参数</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_appearance">外观</string>
+    <string name="settings_tools">工具</string>
+    <string name="link_project">单击此卡片前往项目主页查看更新</string>
+    <string name="project_url_short">github.com/whfy2003/jm-download-assistant</string>
+    <string name="brand_sub">移动端</string>
+    <string name="status_downloaded">已下载</string>
+    <string name="project_url">https://github.com/whfy2003/jm-download-assistant</string>
+</resources>

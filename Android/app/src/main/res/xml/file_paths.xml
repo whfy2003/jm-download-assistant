@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 下载目录 / 收藏目录都在 getExternalFilesDir()/JM 下 -->
+    <external-files-path name="jm_root" path="JM/" />
+</paths>
