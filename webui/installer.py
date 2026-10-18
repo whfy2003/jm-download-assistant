@@ -6,6 +6,8 @@ JM 下载助手 —— 安装程序
   · 选择「安装位置」（程序装到哪里）
   · 选择「下载目录」与「收藏夹目录」
   · 可选创建桌面快捷方式、安装完成后立即启动
+  · 已经装过旧版本时自动进入「升级模式」：只替换程序文件，
+    下载目录 / 收藏目录 / settings.json / 所有漫画原样保留
 
 打包方式：PyInstaller onefile，程序文件以数据形式内嵌在 app_files 目录。
 """
@@ -18,7 +20,7 @@ import threading
 import time
 
 APP_NAME = 'JM 下载助手'
-EXE_NAME = 'JM 下载助手.exe'
+EXE_NAME = 'JM下载助手.exe'
 
 IS_FROZEN = getattr(sys, 'frozen', False)
 BUNDLE_DIR = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__))), 'app_files')
@@ -32,7 +34,104 @@ def default_install_dir():
 
 
 UNINSTALL_KEY = r'Software\Microsoft\Windows\CurrentVersion\Uninstall\JM下载助手'
-APP_VERSION = '1.0'
+APP_VERSION = '1.1'
+
+# 升级时保留的文件：配置与用户数据都不能动
+PRESERVE_NAMES = {'settings.json', 'jm_log.txt', 'jm_fav_log.txt'}
+
+
+def detect_installed():
+    """
+    读取系统「应用」里登记的信息，判断是否已经安装过。
+    返回 {'target':..., 'version':..., 'usable': bool} 或 None。
+    """
+    import winreg
+
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, UNINSTALL_KEY, 0, winreg.KEY_READ)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+    def getv(name):
+        try:
+            return str(winreg.QueryValueEx(key, name)[0])
+        except Exception:
+            return ''
+
+    try:
+        target = getv('InstallLocation')
+        version = getv('DisplayVersion')
+    finally:
+        winreg.CloseKey(key)
+
+    if not target:
+        return None
+
+    target = os.path.normpath(target)
+    usable = os.path.isdir(target) and os.path.isfile(os.path.join(target, EXE_NAME))
+    return {'target': target, 'version': version or '?', 'usable': usable}
+
+
+def read_settings_of(target):
+    """读旧安装里的 settings.json（升级时用来沿用目录）。"""
+    path = os.path.join(target, 'settings.json')
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def write_settings(target, dl, fav, merge=True):
+    """
+    写 settings.json。
+    merge=True（升级）时保留原有字段，例如 AVS，只更新两个目录；
+    merge=False（全新安装）时直接覆盖。
+    """
+    data = read_settings_of(target) if merge else {}
+    if not isinstance(data, dict):
+        data = {}
+    data['pdf_dir'] = dl
+    data['fav_dir'] = fav
+    try:
+        with open(os.path.join(target, 'settings.json'), 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print('写 settings.json 失败：%s' % e)
+        return False
+
+
+def remove_program_files(target, log=None):
+    """
+    升级前清掉旧的程序文件，避免 PyInstaller 的 _internal 里残留旧依赖。
+    只删 exe 与 _internal，settings.json / 漫画 / 收藏 / downloads 一律不动。
+    """
+    log = log or (lambda t: None)
+    problems = []
+
+    internal = os.path.join(target, '_internal')
+    if os.path.isdir(internal):
+        log('正在清理旧版程序组件…')
+        try:
+            shutil.rmtree(internal)
+        except Exception as e:
+            problems.append('_internal：%s' % e)
+
+    exe = os.path.join(target, EXE_NAME)
+    if os.path.isfile(exe):
+        try:
+            os.remove(exe)
+        except Exception as e:
+            problems.append('%s：%s' % (EXE_NAME, e))
+
+    return problems
+
 
 
 def register_uninstall(target):
@@ -80,9 +179,10 @@ def write_uninstall_cmd(target):
     """在安装目录里放一个双击即可卸载的入口。"""
     try:
         path = os.path.join(target, '卸载.cmd')
-        with open(path, 'w', encoding='gbk') as f:
-            f.write('@echo off\r\n')
-            f.write('start "" "%~dp0%s" --uninstall\r\n' % EXE_NAME)
+        with open(path, 'w', encoding='gbk', newline='\r\n') as f:
+            f.write('@echo off\n')
+            # %%~dp0 在 .cmd 里展开成脚本所在目录（这里用 %% 转义 Python 的格式化）
+            f.write('start "" "%%~dp0%s" --uninstall\n' % EXE_NAME)
         return True
     except Exception as e:
         print('写卸载入口失败：%s' % e)
@@ -138,21 +238,47 @@ def _parse_args(argv):
 
 
 def silent_install(argv):
-    """无界面安装（自动化测试 / 高级用户）：--silent --target=... --dl=... --fav=..."""
+    """
+    无界面安装（自动化测试 / 高级用户）：
+      --silent --target=... --dl=... --fav=... --shortcut=0/1 --launch=0/1
+
+    未显式指定 --target 且检测到已安装时，自动按「升级」处理：
+    沿用原安装位置与目录，只替换程序文件，保留 settings.json 与全部数据。
+    """
     args = _parse_args(argv)
-    target = os.path.normpath(args.get('target') or default_install_dir())
-    dl = os.path.normpath(args.get('dl') or os.path.join(target, '漫画'))
-    fav = os.path.normpath(args.get('fav') or os.path.join(target, '收藏'))
+
+    installed = detect_installed()
+    upgrade = bool(installed and installed['usable'] and 'target' not in args)
+
+    if upgrade:
+        target = installed['target']
+        old = read_settings_of(target)
+        dl = os.path.normpath(args.get('dl') or old.get('pdf_dir') or os.path.join(target, '漫画'))
+        fav = os.path.normpath(args.get('fav') or old.get('fav_dir') or os.path.join(target, '收藏'))
+        print('[静默更新] 检测到已安装 v%s，按升级处理' % installed['version'])
+    else:
+        target = os.path.normpath(args.get('target') or default_install_dir())
+        dl = os.path.normpath(args.get('dl') or os.path.join(target, '漫画'))
+        fav = os.path.normpath(args.get('fav') or os.path.join(target, '收藏'))
+
     shortcut = args.get('shortcut', '1') not in ('0', 'false', 'no')
     launch = args.get('launch', '0') in ('1', 'true', 'yes')
 
-    print('[静默安装] 安装位置 : %s' % target)
-    print('[静默安装] 下载目录 : %s' % dl)
-    print('[静默安装] 收藏目录 : %s' % fav)
+    tag = '静默更新' if upgrade else '静默安装'
+    print('[%s] 安装位置 : %s' % (tag, target))
+    print('[%s] 下载目录 : %s' % (tag, dl))
+    print('[%s] 收藏目录 : %s' % (tag, fav))
+
+    if upgrade:
+        problems = remove_program_files(target, print)
+        if problems:
+            print('[静默更新] 失败：旧版本可能仍在运行，请先关闭程序')
+            for p in problems:
+                print('   ! ' + p)
+            return 2
 
     count = copy_files(target, lambda frac, text: None)
-    with open(os.path.join(target, 'settings.json'), 'w', encoding='utf-8') as f:
-        json.dump({'pdf_dir': dl, 'fav_dir': fav}, f, ensure_ascii=False, indent=2)
+    write_settings(target, dl, fav, merge=upgrade)
     os.makedirs(dl, exist_ok=True)
     os.makedirs(fav, exist_ok=True)
 
@@ -178,10 +304,24 @@ def main():
     from tkinter import filedialog, messagebox, ttk
 
     brand = '#5b5bd6'
-    state = {'installing': False, 'done': False, 'target': ''}
+    state = {'installing': False, 'done': False, 'target': '', 'upgrade': False}
+
+    installed = detect_installed()
+    upgrading = bool(installed and installed['usable'])
+    old_cfg = read_settings_of(installed['target']) if upgrading else {}
+
+    if upgrading:
+        state['upgrade'] = True
+        init_install = installed['target']
+        init_dl = old_cfg.get('pdf_dir') or os.path.join(init_install, '漫画')
+        init_fav = old_cfg.get('fav_dir') or os.path.join(init_install, '收藏')
+    else:
+        init_install = default_install_dir()
+        init_dl = os.path.join(init_install, '漫画')
+        init_fav = os.path.join(init_install, '收藏')
 
     root = tk.Tk()
-    root.title(APP_NAME + ' · 安装')
+    root.title(APP_NAME + (' · 更新' if upgrading else ' · 安装'))
     root.configure(bg='#ffffff')
     root.resizable(False, False)
 
@@ -190,14 +330,32 @@ def main():
 
     tk.Label(root, text=APP_NAME, font=('Microsoft YaHei', 18, 'bold'),
              bg='#ffffff', fg='#1a1c23').pack(pady=(20, 2))
-    tk.Label(root, text='安装向导 · 选择安装位置与两个数据目录',
-             font=('Microsoft YaHei', 10), bg='#ffffff', fg='#5b6070').pack(pady=(0, 16))
+
+    subtitle = tk.Label(
+        root,
+        text=('更新到新版本 v%s（当前已安装 v%s）' % (APP_VERSION, installed['version'])
+              if upgrading else '安装向导 · 选择安装位置与两个数据目录'),
+        font=('Microsoft YaHei', 10), bg='#ffffff', fg='#5b6070')
+    subtitle.pack(pady=(0, 6 if upgrading else 16))
+
+    if upgrading:
+        banner = tk.Frame(root, bg='#eef0fb', highlightbackground='#c9cbf2', highlightthickness=1)
+        banner.pack(fill='x', padx=30, pady=(6, 10))
+        tk.Label(banner,
+                 text='升级模式：只替换程序文件，以下目录与全部漫画都会原样保留',
+                 font=('Microsoft YaHei', 9, 'bold'), bg='#eef0fb', fg='#5b5bd6',
+                 anchor='w').pack(fill='x', padx=12, pady=(8, 1))
+        tk.Label(banner,
+                 text='下载目录：%s\n收藏目录：%s' % (init_dl, init_fav),
+                 font=('Microsoft YaHei', 9), bg='#eef0fb', fg='#6b6fc0',
+                 justify='left', anchor='w', wraplength=600).pack(fill='x', padx=12, pady=(0, 8))
 
     body = tk.Frame(root, bg='#ffffff')
     body.pack(fill='x', padx=30)
     body.columnconfigure(0, weight=1)
 
     rows = []
+    widgets = []
 
     def add_row(row, label, hint, initial, browse_title, on_change=None):
         tk.Label(body, text=label, font=('Microsoft YaHei', 10, 'bold'),
@@ -219,16 +377,18 @@ def main():
                 if on_change:
                     on_change()
 
-        tk.Button(line, text='浏览…', font=('Microsoft YaHei', 9), command=browse,
-                  bg='#eef1f6', fg='#3a4653', relief='flat', padx=14, pady=5,
-                  activebackground='#e2e8f1').pack(side='left', padx=(8, 0))
+        btn = tk.Button(line, text='浏览…', font=('Microsoft YaHei', 9), command=browse,
+                        bg='#eef1f6', fg='#3a4653', relief='flat', padx=14, pady=5,
+                        activebackground='#e2e8f1')
+        btn.pack(side='left', padx=(8, 0))
 
         rows.append(var)
+        widgets.append((entry, btn))
         return var
 
-    install_var = tk.StringVar(value=default_install_dir())
-    dl_var = tk.StringVar(value=os.path.join(default_install_dir(), '漫画'))
-    fav_var = tk.StringVar(value=os.path.join(default_install_dir(), '收藏'))
+    install_var = tk.StringVar(value=init_install)
+    dl_var = tk.StringVar(value=init_dl)
+    fav_var = tk.StringVar(value=init_fav)
 
     def sync_sub_dirs():
         """安装位置变了，若下面两个还是默认值就跟着变。"""
@@ -270,22 +430,30 @@ def main():
         status.config(text=text)
         root.update_idletasks()
 
-    def do_install(target, dl, fav, shortcut, launch):
+    def do_install(target, dl, fav, shortcut, launch, upgrade):
         try:
             progress(0.02, '正在检查目标位置…')
-            if os.path.isdir(target):
+
+            if upgrade:
+                progress(0.05, '正在清理旧版程序组件…')
+                problems = remove_program_files(target)
+                if problems:
+                    raise RuntimeError(
+                        '旧版本可能还在运行，请先关闭「%s」窗口后再试。\n\n%s'
+                        % (APP_NAME, '\n'.join(problems)))
+            elif os.path.isdir(target):
                 existing = os.listdir(target)
                 if existing and EXE_NAME not in existing and not any(
                         n.lower().startswith('jm') for n in existing):
                     # 目录非空且看起来不是本程序，交给主线程询问
                     state['conflict'] = True
 
-            progress(0.05, '正在复制程序文件…')
+            progress(0.15 if upgrade else 0.05, '正在复制程序文件…')
             count = copy_files(target, progress)
 
             progress(0.9, '正在写入配置…')
-            with open(os.path.join(target, 'settings.json'), 'w', encoding='utf-8') as f:
-                json.dump({'pdf_dir': dl, 'fav_dir': fav}, f, ensure_ascii=False, indent=2)
+            # 升级时 merge=True：只更新两个目录，AVS 等其它设置原样保留
+            write_settings(target, dl, fav, merge=upgrade)
             os.makedirs(dl, exist_ok=True)
             os.makedirs(fav, exist_ok=True)
 
@@ -297,7 +465,7 @@ def main():
             write_uninstall_cmd(target)
             register_uninstall(target)
 
-            progress(1.0, '安装完成（共 %d 个文件）' % count)
+            progress(1.0, '更新完成（共 %d 个文件）' % count)
             state['done'] = True
             state['target'] = target
             state['launch'] = launch
@@ -310,19 +478,25 @@ def main():
     def finish():
         if state.get('error'):
             messagebox.showerror(APP_NAME, '安装失败：\n%s' % state['error'])
-            start_btn.config(state='normal', text='重试安装')
+            start_btn.config(state='normal',
+                             text='立即更新' if state['upgrade'] else '重试安装')
             return
         if state.get('done'):
-            start_btn.config(state='disabled', text='安装完成')
+            start_btn.config(state='disabled',
+                             text='更新完成' if state['upgrade'] else '安装完成')
             if state.get('launch'):
                 try:
                     subprocess.Popen([os.path.join(state['target'], EXE_NAME)],
                                      cwd=state['target'])
                 except Exception:
                     pass
-            if messagebox.showinfo(APP_NAME,
-                                   '安装完成！\n\n程序位置：%s\n\n'
-                                   '以后双击桌面上的「%s」即可使用。' % (state['target'], APP_NAME)):
+            if state['upgrade']:
+                tip = ('更新完成！\n\n程序位置：%s\n\n'
+                       '下载目录、收藏目录与全部漫画都没有改动。' % state['target'])
+            else:
+                tip = ('安装完成！\n\n程序位置：%s\n\n'
+                       '以后双击桌面上的「%s」即可使用。' % (state['target'], APP_NAME))
+            if messagebox.showinfo(APP_NAME, tip):
                 root.destroy()
 
     def on_start():
@@ -346,12 +520,21 @@ def main():
             messagebox.showwarning(APP_NAME, '下载目录 / 收藏夹目录不能就是安装位置本身，请放在它下面或别处。')
             return
 
-        # 目标目录已存在且非空 → 先问清楚
-        if os.path.isdir(target) and os.listdir(target):
-            if not messagebox.askyesno(APP_NAME,
-                                       '目标文件夹已存在且不为空：\n%s\n\n'
-                                       '继续安装会把同名文件覆盖掉（其它文件保留）。\n是否继续？' % target):
+        if state['upgrade']:
+            if not messagebox.askyesno(
+                    APP_NAME,
+                    '将把「%s」更新到 v%s。\n\n'
+                    '· 只替换程序文件（%s 与 _internal）\n'
+                    '· 下载目录 / 收藏目录 / 全部漫画与设置原样保留\n\n是否继续？'
+                    % (target, APP_VERSION, EXE_NAME)):
                 return
+        else:
+            # 目标目录已存在且非空 → 先问清楚
+            if os.path.isdir(target) and os.listdir(target):
+                if not messagebox.askyesno(APP_NAME,
+                                           '目标文件夹已存在且不为空：\n%s\n\n'
+                                           '继续安装会把同名文件覆盖掉（其它文件保留）。\n是否继续？' % target):
+                    return
 
         try:
             os.makedirs(target, exist_ok=True)
@@ -362,14 +545,18 @@ def main():
         state['installing'] = True
         state.pop('error', None)
         state.pop('done', None)
-        start_btn.config(state='disabled', text='正在安装…')
+        start_btn.config(state='disabled',
+                         text='正在更新…' if state['upgrade'] else '正在安装…')
         threading.Thread(target=do_install,
-                         args=(target, dl, fav, bool(shortcut_var.get()), bool(launch_var.get())),
+                         args=(target, dl, fav, bool(shortcut_var.get()),
+                               bool(launch_var.get()), state['upgrade']),
                          daemon=True).start()
 
     btns = tk.Frame(root, bg='#ffffff')
     btns.pack(pady=(14, 16))
-    start_btn = tk.Button(btns, text='开始安装', font=('Microsoft YaHei', 11, 'bold'),
+    start_btn = tk.Button(btns,
+                          text='立即更新' if upgrading else '开始安装',
+                          font=('Microsoft YaHei', 11, 'bold'),
                           bg=brand, fg='#ffffff', relief='flat', padx=32, pady=8,
                           activebackground='#4d4dc9', activeforeground='#ffffff',
                           command=on_start)
@@ -378,12 +565,39 @@ def main():
               bg='#eef1f6', fg='#3a4653', relief='flat', padx=24, pady=8,
               activebackground='#e2e8f1', command=root.destroy).pack(side='left', padx=8)
 
+    def switch_to_fresh():
+        """从「升级」切回「全新安装」：解锁路径输入。"""
+        if not messagebox.askyesno(
+                APP_NAME,
+                '改为全新安装？\n\n'
+                '这会让你重新选择安装位置与数据目录。\n'
+                '如果选到同一个目录，程序文件仍会覆盖，但不会有任何数据被删除。'):
+            return
+        state['upgrade'] = False
+        for entry, btn in widgets:
+            entry.config(state='normal', bg='#ffffff')
+            btn.config(state='normal')
+        start_btn.config(text='开始安装')
+        fresh_btn.pack_forget()
+
+    if upgrading:
+        # 放在按钮行里（而不是窗口最底部），避免窗口高度不够时被裁掉
+        fresh_btn = tk.Button(btns, text='改为全新安装', font=('Microsoft YaHei', 10),
+                              bg='#eef1f6', fg='#3a4653', relief='flat', padx=20, pady=8,
+                              activebackground='#e2e8f1', command=switch_to_fresh)
+        fresh_btn.pack(side='left', padx=8)
+
+        # 升级模式下路径不可编辑，防止误改
+        for entry, btn in widgets:
+            entry.config(state='readonly', bg='#f4f5f8')
+            btn.config(state='disabled')
+
     if not os.path.isdir(BUNDLE_DIR):
         status.config(text='警告：未找到内嵌的程序文件（app_files）', fg='#e5484d')
 
     # 按实际内容自适应高度，避免按钮被挤出窗口
     root.update_idletasks()
-    win_h = max(520, root.winfo_reqheight() + 8)
+    win_h = max(560 if upgrading else 520, root.winfo_reqheight() + 8)
     sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
     root.geometry('%dx%d+%d+%d' % (w, win_h, (sw - w) // 2, max(20, (sh - win_h) // 3)))
 

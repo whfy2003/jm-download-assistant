@@ -124,6 +124,20 @@
               </span>
             </div>
 
+            <div class="progress-box" id="progress-box">
+              <div class="progress-head">
+                <span id="progress-phase">准备就绪</span>
+                <span id="progress-pct">0%</span>
+              </div>
+              <div class="progress-track">
+                <span class="progress-fill" id="progress-fill"></span>
+              </div>
+              <div class="progress-meta">
+                <span id="progress-count">0 / 0 张</span>
+                <span id="progress-chapter"></span>
+              </div>
+            </div>
+
             <div class="divider"></div>
 
             <div class="field">
@@ -270,6 +284,53 @@
             <div id="disk-detail"></div>
             <button class="btn btn-outline btn-block" id="btn-disk-refresh" style="margin-top:16px">重新统计</button>
           </section>
+
+          <section class="card card-pad">
+            <div class="card-head">
+              <h2>AVS 登录（可选）</h2>
+              <span class="badge" id="avs-state">未配置</span>
+            </div>
+            <div class="card-desc">少部分内容需要登录后才看得到。填上浏览器里登录后的 <code>AVS</code>，就能下载到这些内容。</div>
+
+            <div class="field">
+              <label for="set-avs">AVS 值</label>
+              <input id="set-avs" class="input" type="password" spellcheck="false" autocomplete="off"
+                     placeholder="留空 = 不登录，只下载公开内容">
+            </div>
+
+            <div class="row" style="margin-top:12px">
+              <button id="btn-save-avs" class="btn btn-outline grow">保存 AVS</button>
+              <button id="btn-clear-avs" class="btn btn-ghost">清空</button>
+            </div>
+
+            <p class="hint" style="margin-top:14px">
+              获取方式：浏览器登录禁漫 → 按 <b>F12</b> → <b>Application / 应用</b> → <b>Cookies</b> →
+              找到名为 <code>AVS</code> 的一项，复制它的值粘到上面。<br>
+              AVS 相当于登录凭证，只保存在本机的 <code>settings.json</code>，不会上传到任何地方。<br>
+              留空即按未登录状态下载，功能与之前完全一致。
+            </p>
+          </section>
+
+          <section class="card card-pad">
+            <div class="card-head">
+              <h2>关于与更新</h2>
+              <span class="badge" id="app-version">v{{ version }}</span>
+            </div>
+            <div class="card-desc">新版本会发布在 GitHub 项目主页，可在这里一键比对版本。</div>
+
+            <div class="row">
+              <button id="btn-open-project" class="btn btn-outline grow">打开项目主页</button>
+              <button id="btn-check-update" class="btn btn-primary grow">检查更新</button>
+            </div>
+
+            <div id="update-result" class="update-result hidden"></div>
+
+            <p class="hint" style="margin-top:14px">
+              检查更新只读取最新版本号，<b>不会</b>自动下载或改动任何文件。<br>
+              升级方式：下载新版安装程序直接运行，安装向导会认出已安装的版本，
+              只替换程序文件，<b>漫画、收藏、目录设置全部保留</b>。
+            </p>
+          </section>
         </div>
       </section>
     </div>
@@ -294,6 +355,11 @@
     pdf: {{ pdf_dir|tojson }},
     fav: {{ fav_dir|tojson }},
     defaults: { pdf: {{ default_pdf|tojson }}, fav: {{ default_fav|tojson }} }
+  };
+  window.JM_APP = {
+    version: {{ version|tojson }},
+    projectUrl: {{ project_url|tojson }},
+    releasesUrl: {{ releases_url|tojson }}
   };
 </script>
 <script src="{{ url_for('static', filename='app.js') }}"></script>

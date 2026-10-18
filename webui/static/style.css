@@ -344,6 +344,87 @@ code { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-secon
 @keyframes spin { to { transform: rotate(360deg); } }
 .hidden { display: none !important; }
 
+/* ---------------- 下载进度条 ---------------- */
+.progress-box { margin-top: var(--sp-4); }
+
+.progress-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3);
+  font-size: 12.5px; font-weight: 500; color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.progress-head #progress-pct {
+  font-family: var(--font-mono); font-weight: 700;
+  color: var(--brand); letter-spacing: .02em;
+}
+
+.progress-track {
+  position: relative;
+  height: 10px;
+  border-radius: var(--r-pill);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  display: block; height: 100%; width: 0;
+  border-radius: var(--r-pill);
+  background: var(--brand);
+  transition: width .45s var(--ease), background .2s;
+}
+
+.progress-meta {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3);
+  margin-top: 6px;
+  font-size: 12px; color: var(--text-muted);
+}
+.progress-meta #progress-count { font-family: var(--font-mono); }
+.progress-meta #progress-chapter {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 62%; text-align: right;
+}
+
+/* 拿不到总数时（正在请求本子信息）用滑动条表示「正在进行」 */
+.progress-box.is-meta .progress-fill {
+  width: 35%;
+  animation: progress-slide 1.15s var(--ease) infinite;
+}
+@keyframes progress-slide {
+  0%   { transform: translateX(-105%); }
+  100% { transform: translateX(300%); }
+}
+
+.progress-box.is-pdf .progress-fill { background: var(--warning); }
+.progress-box.is-done .progress-fill { background: var(--success); }
+.progress-box.is-error .progress-fill { background: var(--danger); }
+
+/* ---------------- 检查更新结果 ---------------- */
+.update-result {
+  margin-top: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  font-size: 13px; line-height: 1.75;
+  color: var(--text-secondary);
+}
+.update-result b { color: var(--text); }
+.update-result.is-ok { border-color: rgba(18, 161, 80, .45); background: rgba(18, 161, 80, .08); color: var(--success); }
+.update-result.is-ok b { color: var(--success); }
+.update-result.is-new { border-color: rgba(91, 91, 214, .45); background: var(--brand-soft); color: var(--brand); }
+.update-result.is-new b { color: var(--brand); }
+.update-result.is-err { border-color: rgba(245, 166, 35, .5); background: rgba(245, 166, 35, .1); color: var(--warning); }
+.update-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); flex-wrap: wrap; }
+.update-notes {
+  margin-top: var(--sp-2);
+  max-height: 140px; overflow: auto;
+  font-size: 12px; line-height: 1.7;
+  color: var(--text-secondary);
+  white-space: pre-wrap; word-break: break-word;
+}
+
 .runtime { margin-top: var(--sp-4); }
 .runtime summary {
   cursor: pointer; font-size: 12.5px; color: var(--text-secondary);

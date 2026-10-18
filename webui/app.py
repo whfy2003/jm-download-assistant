@@ -9,6 +9,9 @@ JM 下载助手 —— 本地网页端（Flask）
   4. 收藏页：收藏夹同样支持查看、搜索、打开、取消收藏、删除
   5. 设置页：可修改下载目录与收藏目录，修改后自动把原目录内容迁移过去
   6. 侧栏显示两个目录所在磁盘的占用条
+  7. 下载过程实时进度：已下载张数 / 总张数、第几章、合并 PDF 阶段
+  8. 设置页可填 AVS（登录 cookies），用于访问登录后才可见的内容
+  9. 设置页可检查更新：读取项目主页最新 Release 版本
 
 日志格式（两个目录一致）：编号 | 文件名 | 时间
 配置持久化：E:\\JM web\\settings.json
@@ -58,6 +61,16 @@ RECENT_LIMIT = 500          # “搜索”只在这最近 500 条记录里找
 MAX_RUNTIME_LOGS = 200      # 状态区保留的最近运行日志行数
 DISK_CACHE_SECONDS = 20     # 磁盘占用统计缓存
 
+# ----------------------------------------------------------------------------
+# 版本与项目信息（「检查更新」用）
+# 发新版本时只要同步改 APP_VERSION，与 GitHub Release 的 tag 比较即可。
+# ----------------------------------------------------------------------------
+APP_VERSION = '1.1'
+PROJECT_URL = 'https://github.com/whfy2003/jm-download-assistant'
+RELEASES_URL = PROJECT_URL + '/releases/latest'
+LATEST_RELEASE_API = ('https://api.github.com/repos/whfy2003/'
+                      'jm-download-assistant/releases/latest')
+
 app = Flask(__name__,
             template_folder=os.path.join(RES_DIR, 'templates'),
             static_folder=os.path.join(RES_DIR, 'static'))
@@ -66,7 +79,7 @@ app = Flask(__name__,
 # 目录设置（可在设置页修改，持久化到 settings.json）
 # ----------------------------------------------------------------------------
 _settings_lock = threading.Lock()
-_settings = {'pdf_dir': DEFAULT_PDF_DIR, 'fav_dir': DEFAULT_FAV_DIR}
+_settings = {'pdf_dir': DEFAULT_PDF_DIR, 'fav_dir': DEFAULT_FAV_DIR, 'avs': ''}
 
 
 def _load_settings():
@@ -80,6 +93,8 @@ def _load_settings():
             _settings['pdf_dir'] = data['pdf_dir'].strip()
         if isinstance(data.get('fav_dir'), str) and data['fav_dir'].strip():
             _settings['fav_dir'] = data['fav_dir'].strip()
+        if isinstance(data.get('avs'), str):
+            _settings['avs'] = data['avs'].strip()
     except Exception as e:
         print('读取 settings.json 失败：%s' % e)
 
@@ -98,6 +113,11 @@ def get_pdf_dir():
 
 def get_fav_dir():
     return _settings['fav_dir']
+
+
+def get_avs():
+    """登录 cookies 里的 AVS 值（可空）。用于访问登录后才可见的内容。"""
+    return (_settings.get('avs') or '').strip()
 
 
 def get_log_file():
@@ -127,11 +147,57 @@ _state = {
     'started_at': '',
     'finished_at': '',
     'logs': [],
+    # 下载进度：phase = idle / meta / download / pdf / done / error
+    'progress': {
+        'phase': 'idle',
+        'done': 0,          # 已处理的图片数（含缓存命中）
+        'total': 0,         # 总图片数（拿到本子详情后才知道）
+        'percent': 0,
+        'photo_done': 0,
+        'photo_total': 0,
+        'photo_index': 0,
+        'current': '',      # 当前章节标题
+        'title': '',        # 本子标题
+        'note': '',         # 阶段说明文字
+        'failed': 0,
+    },
 }
 
 
 def _now():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _progress_reset(note=''):
+    with _state_lock:
+        _state['progress'] = {
+            'phase': 'meta', 'done': 0, 'total': 0, 'percent': 0,
+            'photo_done': 0, 'photo_total': 0, 'photo_index': 0,
+            'current': '', 'title': '', 'note': note, 'failed': 0,
+        }
+
+
+def _progress_update(**fields):
+    with _state_lock:
+        p = _state['progress']
+        p.update(fields)
+        total = int(p.get('total') or 0)
+        if total > 0:
+            p['percent'] = max(0, min(100, int(int(p.get('done') or 0) * 100 / total)))
+
+
+def _progress_bump(images=0, photos=0, failed=0):
+    with _state_lock:
+        p = _state['progress']
+        if images:
+            p['done'] = int(p.get('done') or 0) + images
+        if photos:
+            p['photo_done'] = int(p.get('photo_done') or 0) + photos
+        if failed:
+            p['failed'] = int(p.get('failed') or 0) + failed
+        total = int(p.get('total') or 0)
+        if total > 0:
+            p['percent'] = max(0, min(100, int(int(p.get('done') or 0) * 100 / total)))
 
 
 def _push_log(line):
@@ -522,8 +588,11 @@ def _cleanup_empty_dirs(root):
 
 def _build_option():
     """
-    载入 option.yml，并把 img2pdf 插件的输出目录对齐到「当前设置的下载目录」。
+    载入 option.yml，并把两项路径对齐到本机实际位置：
+      · img2pdf 的输出目录 pdf_dir → 当前设置的下载目录
+      · 图片工作区 base_dir      → 程序目录下的 downloads\\
     以字符串方式改写，不改动磁盘上的 option.yml 文件。
+    若设置里填了 AVS，则把它作为登录 cookies 注入，用于访问登录后才可见的内容。
     """
     import re
 
@@ -532,13 +601,30 @@ def _build_option():
     with open(OPTION_FILE, 'r', encoding='utf-8') as f:
         text = f.read()
 
-    target = '"' + get_pdf_dir().replace('\\', '/').replace('"', '\\"') + '"'
-    new_text, count = re.subn(r'pdf_dir\s*:\s*.*', 'pdf_dir: ' + target, text, count=1)
+    def as_yaml_str(path):
+        return '"' + path.replace('\\', '/').replace('"', '\\"') + '"'
+
+    # PDF 成品输出目录
+    new_text, count = re.subn(r'pdf_dir\s*:\s*.*', 'pdf_dir: ' + as_yaml_str(get_pdf_dir()),
+                              text, count=1)
     if count == 0:
         # 配置里没有 pdf_dir 时，退回原始配置，避免意外
         new_text = text
 
-    return jmcomic.create_option_by_str(new_text)
+    # 图片工作区：必须跟程序目录走，否则绿色版/安装版会写到打包机器的路径
+    new_text, count = re.subn(r'base_dir\s*:\s*.*', 'base_dir: ' + as_yaml_str(WORK_DIR),
+                              new_text, count=1)
+
+    option = jmcomic.create_option_by_str(new_text)
+
+    avs = get_avs()
+    if avs:
+        try:
+            option.update_cookies({'AVS': avs})
+        except Exception as e:
+            _push_log('[提示] AVS 注入失败（将按未登录状态下载）：%s' % e)
+
+    return option
 
 
 def _run_download(jm_id):
@@ -550,6 +636,7 @@ def _run_download(jm_id):
             'message': '程序运行中', 'ok': None,
             'started_at': _now(), 'finished_at': '', 'logs': [],
         })
+    _progress_reset('正在获取本子信息…')
 
     original_stdout, original_stderr = sys.stdout, sys.stderr
     tee_out, tee_err = _TeeStream(original_stdout), _TeeStream(original_stderr)
@@ -558,11 +645,54 @@ def _run_download(jm_id):
     try:
         import jmcomic
 
+        # 用自定义 downloader 挂在 jmcomic 的下载回调上统计进度。
+        # 这些回调由 jmcomic 自己在多线程里调用，_progress_* 内部已加锁。
+        class _ProgressDownloader(jmcomic.JmDownloader):
+            def before_album(self, album):
+                try:
+                    total = int(getattr(album, 'page_count', 0) or 0)
+                except Exception:
+                    total = 0
+                try:
+                    photo_total = len(album)
+                except Exception:
+                    photo_total = 0
+                _progress_update(phase='download', total=total,
+                                 photo_total=photo_total,
+                                 title=getattr(album, 'name', '') or '',
+                                 note='')
+                super().before_album(album)
+
+            def before_photo(self, photo):
+                # jmcomic 的 photo.index 从 1 开始（形如 album[1/12]）
+                try:
+                    index = int(getattr(photo, 'index', 0) or 0)
+                except Exception:
+                    index = 0
+                _progress_update(photo_index=index,
+                                 current=getattr(photo, 'name', '') or '')
+                super().before_photo(photo)
+
+            def after_image(self, image, img_save_path):
+                super().after_image(image, img_save_path)
+                _progress_bump(images=1)
+
+            def after_photo(self, photo):
+                super().after_photo(photo)
+                _progress_bump(photos=1)
+
+            def after_album(self, album):
+                # 配置里 img2pdf 挂在 after_album，这一步耗时最长，单独显示
+                _progress_update(phase='pdf', note='正在合并为 PDF…')
+                super().after_album(album)
+                _progress_update(phase='done', note='')
+
         option = _build_option()
         with _JmLoggerCapture():
             sys.stdout, sys.stderr = tee_out, tee_err
             try:
-                album, _downloader = jmcomic.download_album(jm_id, option)
+                album, _downloader = jmcomic.download_album(
+                    jm_id, option, downloader=_ProgressDownloader)
             finally:
                 sys.stdout, sys.stderr = original_stdout, original_stderr
 
@@ -570,9 +700,11 @@ def _run_download(jm_id):
         _append_record_pair(get_log_file(), jm_id, title)
         _cleanup_empty_dirs(WORK_DIR)
         ok, message = True, '下载完成'
+        _progress_update(phase='done', percent=100, note='')
     except Exception as e:
         message = '%s: %s' % (type(e).__name__, e)
         _push_log('[下载失败] ' + message)
+        _progress_update(phase='error', note='下载失败')
     finally:
         with _state_lock:
             _state.update({
@@ -592,6 +724,8 @@ def index():
         fav_dir=get_fav_dir(), fav_log=get_fav_log(),
         default_pdf=DEFAULT_PDF_DIR, default_fav=DEFAULT_FAV_DIR,
         addr='127.0.0.1:%d' % PORT,
+        version=APP_VERSION, project_url=PROJECT_URL,
+        releases_url=RELEASES_URL,
     )
 
 
@@ -600,6 +734,7 @@ def api_state():
     with _state_lock:
         payload = dict(_state)
         payload['logs'] = list(_state['logs'])
+        payload['progress'] = dict(_state['progress'])
     payload['pdf_dir'] = get_pdf_dir()
     return jsonify(payload)
 
@@ -618,6 +753,7 @@ def api_download():
         if _state['running']:
             return jsonify(ok=False, error='已有下载任务在运行中，请稍候'), 409
 
+    _progress_reset('正在启动…')
     threading.Thread(target=_run_download, args=(jm_id,), daemon=True).start()
     return jsonify(ok=True, message='已开始下载 %s' % jm_id)
 
@@ -670,6 +806,7 @@ def api_disk():
 def api_settings():
     if request.method == 'GET':
         return jsonify(ok=True, pdf_dir=get_pdf_dir(), fav_dir=get_fav_dir(),
+                       avs=get_avs(), version=APP_VERSION,
                        disk=_disk_snapshot())
 
     data = request.get_json(silent=True) or {}
@@ -701,13 +838,115 @@ def api_settings():
             _settings['fav_dir'] = os.path.abspath(new_fav)
         changed = True
 
+    # AVS：只有请求里明确带了 avs 字段才改，避免「只保存目录」时被清空
+    if 'avs' in data:
+        avs = str(data.get('avs') or '').strip()
+        avs = avs.replace('\r', '').replace('\n', '').replace('"', '').replace("'", '')
+        if len(avs) > 200:
+            return jsonify(ok=False, error='AVS 长度异常（正常不超过几十个字符）'), 400
+        with _settings_lock:
+            if _settings.get('avs', '') != avs:
+                _settings['avs'] = avs
+                changed = True
+
     if changed:
         _save_settings()
         _disk_cache['data'] = None
 
     return jsonify(ok=True, changed=changed, moves=moves,
-                   pdf_dir=get_pdf_dir(), fav_dir=get_fav_dir(),
+                   pdf_dir=get_pdf_dir(), fav_dir=get_fav_dir(), avs=get_avs(),
                    disk=_disk_snapshot(force=True))
+
+
+# ----------------------------------------------------------------------------
+# 路由 · 关于与更新
+# ----------------------------------------------------------------------------
+def _version_tuple(text):
+    """把 'V1.0' / 'v1.2.3' 之类解析成可比较的元组；解析不出返回 ()。"""
+    import re
+    nums = re.findall(r'\d+', str(text or ''))
+    return tuple(int(n) for n in nums[:4])
+
+
+def _fetch_latest_release():
+    """
+    读 GitHub 的最新 Release。返回 (info, error)。
+    只用 Python 标准库，避免额外依赖；超时较短，失败时返回友好提示。
+    """
+    import urllib.request
+
+    req = urllib.request.Request(
+        LATEST_RELEASE_API,
+        headers={
+            'User-Agent': 'JM-Download-Assistant/%s' % APP_VERSION,
+            'Accept': 'application/vnd.github+json',
+        })
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode('utf-8', 'replace'))
+    except Exception as e:
+        return None, ('无法连接 GitHub（%s）。可以点「打开项目主页」手动查看。'
+                      % type(e).__name__)
+
+    assets = []
+    for a in data.get('assets') or []:
+        assets.append({
+            'name': a.get('name') or '',
+            'size': a.get('size') or 0,
+            'url': a.get('browser_download_url') or '',
+        })
+
+    return {
+        'tag': data.get('tag_name') or '',
+        'name': data.get('name') or '',
+        'url': data.get('html_url') or RELEASES_URL,
+        'notes': (data.get('body') or '')[:4000],
+        'published_at': data.get('published_at') or '',
+        'assets': assets,
+    }, None
+
+
+@app.route('/api/about')
+def api_about():
+    return jsonify(ok=True, version=APP_VERSION, project_url=PROJECT_URL,
+                   releases_url=RELEASES_URL)
+
+
+@app.route('/api/check-update')
+def api_check_update():
+    info, error = _fetch_latest_release()
+    if error:
+        return jsonify(ok=False, error=error, current=APP_VERSION,
+                       project_url=PROJECT_URL, releases_url=RELEASES_URL)
+
+    latest = info['tag']
+    has_update = _version_tuple(latest) > _version_tuple(APP_VERSION)
+    return jsonify(ok=True, current=APP_VERSION, latest=latest,
+                   latest_name=info['name'], has_update=has_update,
+                   url=info['url'], notes=info['notes'],
+                   published_at=info['published_at'],
+                   assets=info['assets'],
+                   project_url=PROJECT_URL, releases_url=RELEASES_URL)
+
+
+@app.route('/api/open-url', methods=['POST'])
+def api_open_url():
+    """只允许打开本项目的 GitHub 页面，避免被当成任意 URL 跳板。"""
+    import webbrowser
+
+    data = request.get_json(silent=True) or {}
+    url = str(data.get('url') or '').strip()
+    allowed_prefix = ('https://github.com/whfy2003/jm-download-assistant',
+                      'https://api.github.com/repos/whfy2003/jm-download-assistant',
+                      'https://objects.githubusercontent.com/',
+                      'https://github.com/whfy2003/')
+    if not url.startswith(allowed_prefix):
+        return jsonify(ok=False, error='地址不在允许范围内'), 400
+    try:
+        webbrowser.open(url)
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 500
 
 
 # ----------------------------------------------------------------------------
@@ -827,13 +1066,14 @@ def main():
             print('创建目录失败 %s：%s' % (d, e))
 
     print('=' * 60)
-    print('JM 下载助手 已启动')
+    print('JM 下载助手 已启动  v%s' % APP_VERSION)
     print('  访问地址 : http://%s:%d' % (HOST, PORT))
     print('  数据目录 : %s' % APP_DIR)
     print('  PDF 目录 : %s' % get_pdf_dir())
     print('  下载日志 : %s' % get_log_file())
     print('  收藏目录 : %s' % get_fav_dir())
     print('  收藏日志 : %s' % get_fav_log())
+    print('  AVS 登录 : %s' % ('已配置' if get_avs() else '未配置（只能下载公开内容）'))
     print('  设置文件 : %s' % SETTINGS_FILE)
     print('  关闭本窗口即停止服务')
     print('=' * 60)

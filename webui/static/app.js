@@ -4,12 +4,13 @@
 
   const $ = (id) => document.getElementById(id);
   const PATHS = window.JM_PATHS || { pdf: '', fav: '', defaults: {} };
+  const APPMETA = window.JM_APP || { version: '', projectUrl: '', releasesUrl: '' };
 
   const STAR_OUT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>';
   const STAR_ON = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>';
   const TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>';
 
-  const POLL_MS = 1500;
+  const POLL_MS = 1000;
   const THEME_KEY = 'jm-theme';
   const VIEWS = ['download', 'favorites', 'settings'];
 
@@ -338,10 +339,61 @@
   }
 
   /* ---------------- 运行状态 ---------------- */
+  function renderProgress(s) {
+    const box = $('progress-box');
+    if (!box) return;
+
+    const p = s.progress || {};
+    let phase = p.phase || 'idle';
+    if (!s.running) {
+      if (s.ok === true) phase = 'done';
+      else if (s.ok === false) phase = 'error';
+      else phase = 'idle';
+    }
+
+    const total = Number(p.total) || 0;
+    const done = Number(p.done) || 0;
+    const pct = phase === 'done' ? 100 : Math.max(0, Math.min(100, Number(p.percent) || 0));
+
+    const head = $('progress-phase');
+    if (phase === 'meta') head.textContent = p.note || '正在获取本子信息…';
+    else if (phase === 'download') head.textContent = '正在下载' + (p.title ? ' · ' + p.title : '');
+    else if (phase === 'pdf') head.textContent = p.note || '正在合并为 PDF…';
+    else if (phase === 'done') head.textContent = '已完成';
+    else if (phase === 'error') head.textContent = p.note || '下载中断';
+    else head.textContent = '准备就绪';
+
+    $('progress-pct').textContent = phase === 'meta' ? '…' : pct + '%';
+
+    if (phase === 'meta') {
+      $('progress-fill').style.width = '35%';
+    } else {
+      $('progress-fill').style.width = pct + '%';
+    }
+
+    const countEl = $('progress-count');
+    if (phase === 'idle') countEl.textContent = '0 / 0 张';
+    else if (total > 0) countEl.textContent = done + ' / ' + total + ' 张';
+    else countEl.textContent = done + ' 张已处理';
+
+    let chapter = '';
+    if (p.photo_index && p.photo_total) chapter = '第 ' + p.photo_index + '/' + p.photo_total + ' 章';
+    if (p.current) chapter += (chapter ? ' · ' : '') + p.current;
+    $('progress-chapter').textContent =
+      (phase === 'download' || phase === 'pdf') ? chapter : '';
+
+    box.className = 'progress-box' +
+      (phase === 'meta' ? ' is-meta' : '') +
+      (phase === 'pdf' ? ' is-pdf' : '') +
+      (phase === 'done' ? ' is-done' : '') +
+      (phase === 'error' ? ' is-error' : '');
+  }
+
   function applyState(s) {
     const running = !!s.running;
     const elStatusText = $('status-text');
 
+    renderProgress(s);
     $('spinner').classList.toggle('hidden', !running);
 
     if (running) {
@@ -411,12 +463,26 @@
   }
 
   /* ---------------- 设置 ---------------- */
+  function paintAvsState(avs) {
+    const badge = $('avs-state');
+    if (!badge) return;
+    if (avs) {
+      badge.textContent = '已配置';
+      badge.className = 'badge badge-success';
+    } else {
+      badge.textContent = '未配置';
+      badge.className = 'badge';
+    }
+  }
+
   async function loadSettings() {
     try {
       const res = await fetch('/api/settings', { cache: 'no-store' });
       const data = await res.json();
       $('set-pdf').value = data.pdf_dir || '';
       $('set-fav').value = data.fav_dir || '';
+      $('set-avs').value = data.avs || '';
+      paintAvsState(data.avs);
       if (data.disk) {
         diskData = data.disk;
         paintSidebarBars();
@@ -424,6 +490,126 @@
       }
     } catch (e) {
       toast('读取设置失败：' + e.message, true);
+    }
+  }
+
+  async function saveAvs() {
+    const input = $('set-avs');
+    const avs = input.value.trim();
+    if (!avs) { toast('请先粘贴 AVS 值，或点「清空」', true); input.focus(); return; }
+
+    const data = await postJson('/api/settings', { avs: avs });
+    if (!data.ok) { toast(data.error || '保存失败', true); return; }
+
+    input.value = data.avs || '';
+    paintAvsState(data.avs);
+    toast(data.avs ? 'AVS 已保存，下次下载会带上登录凭证' : 'AVS 已清空');
+  }
+
+  async function clearAvs() {
+    if (!confirm('清空 AVS？\n\n之后只能下载公开内容，已下载的文件不受影响。')) return;
+
+    const data = await postJson('/api/settings', { avs: '' });
+    if (!data.ok) { toast(data.error || '清空失败', true); return; }
+
+    $('set-avs').value = '';
+    paintAvsState('');
+    toast('AVS 已清空');
+  }
+
+  /* ---------------- 关于与更新 ---------------- */
+  async function openUrl(url) {
+    if (!url) return;
+    const data = await postJson('/api/open-url', { url: url });
+    if (!data.ok) toast(data.error || '打开链接失败', true);
+  }
+
+  function fmtDate(text) {
+    if (!text) return '';
+    try {
+      const d = new Date(text);
+      if (isNaN(d.getTime())) return text;
+      const pad = (n) => (n < 10 ? '0' + n : '' + n);
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    } catch (e) { return text; }
+  }
+
+  function renderUpdate(data) {
+    const box = $('update-result');
+    box.classList.remove('hidden');
+
+    const current = escapeHtml(data.current || APPMETA.version || '');
+    const latest = escapeHtml(data.latest || '');
+
+    if (data.has_update) {
+      const assets = data.assets || [];
+      const exe = assets.find((a) => /\.exe$/i.test(a.name));
+      const zip = assets.find((a) => /\.zip$/i.test(a.name));
+
+      let actions = '<div class="update-actions">' +
+        '<button class="btn btn-primary btn-sm" data-url="' +
+        escapeHtml(data.url || APPMETA.releasesUrl) + '">前往发布页</button>' +
+        '<button class="btn btn-outline btn-sm" data-url="' +
+        escapeHtml(APPMETA.projectUrl) + '">项目主页</button>';
+      if (exe && exe.url) {
+        actions += '<button class="btn btn-outline btn-sm" data-url="' +
+          escapeHtml(exe.url) + '">下载安装程序</button>';
+      }
+      if (zip && zip.url) {
+        actions += '<button class="btn btn-outline btn-sm" data-url="' +
+          escapeHtml(zip.url) + '">下载绿色版</button>';
+      }
+      actions += '</div>';
+
+      box.className = 'update-result is-new';
+      box.innerHTML =
+        '<div>发现新版本：<b>' + latest + '</b>（当前 <b>v' + current + '</b>）</div>' +
+        (data.latest_name ? '<div>名称：' + escapeHtml(data.latest_name) + '</div>' : '') +
+        (data.published_at ? '<div>发布时间：' + escapeHtml(fmtDate(data.published_at)) + '</div>' : '') +
+        (data.notes ? '<div class="update-notes">' + escapeHtml(data.notes) + '</div>' : '') +
+        '<div style="margin-top:8px">下载新版安装程序后直接运行即可，安装向导会只替换程序文件，' +
+        '<b>漫画与设置全部保留</b>。</div>' +
+        actions;
+    } else {
+      box.className = 'update-result is-ok';
+      box.innerHTML =
+        '<div>已是最新版本：<b>v' + current + '</b></div>' +
+        (latest ? '<div>GitHub 上最新版：' + latest + '</div>' : '') +
+        '<div class="update-actions">' +
+        '<button class="btn btn-outline btn-sm" data-url="' +
+        escapeHtml(APPMETA.projectUrl) + '">项目主页</button></div>';
+    }
+  }
+
+  async function checkUpdate() {
+    const btn = $('btn-check-update');
+    const box = $('update-result');
+    const oldText = btn.textContent;
+
+    btn.disabled = true;
+    btn.textContent = '检查中…';
+    box.classList.remove('hidden');
+    box.className = 'update-result';
+    box.innerHTML = '正在读取 GitHub 上的最新版本…';
+
+    try {
+      const res = await fetch('/api/check-update', { cache: 'no-store' });
+      const data = await res.json();
+      if (!data.ok) {
+        box.className = 'update-result is-err';
+        box.innerHTML = escapeHtml(data.error || '检查更新失败') +
+          '<div class="update-actions">' +
+          '<button class="btn btn-outline btn-sm" data-url="' +
+          escapeHtml(APPMETA.projectUrl) + '">打开项目主页</button></div>';
+        return;
+      }
+      renderUpdate(data);
+    } catch (e) {
+      box.className = 'update-result is-err';
+      box.innerHTML = '检查更新失败：' + escapeHtml(e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldText;
     }
   }
 
@@ -545,6 +731,17 @@
   $('btn-save-settings').addEventListener('click', saveSettings);
   $('btn-reset-settings').addEventListener('click', resetSettings);
   $('btn-disk-refresh').addEventListener('click', function () { loadDisk(true); toast('已重新统计磁盘占用'); });
+
+  $('btn-save-avs').addEventListener('click', saveAvs);
+  $('btn-clear-avs').addEventListener('click', clearAvs);
+  $('set-avs').addEventListener('keydown', function (e) { if (e.key === 'Enter') saveAvs(); });
+
+  $('btn-check-update').addEventListener('click', checkUpdate);
+  $('btn-open-project').addEventListener('click', function () { openUrl(APPMETA.projectUrl); });
+  $('update-result').addEventListener('click', function (e) {
+    const btn = e.target.closest('[data-url]');
+    if (btn) openUrl(btn.getAttribute('data-url'));
+  });
 
   function bindOpenFolder(btnId, scope) {
     const btn = $(btnId);
