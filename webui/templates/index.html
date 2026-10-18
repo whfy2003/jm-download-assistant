@@ -138,6 +138,28 @@
               </div>
             </div>
 
+            <!-- 输入编号命中下载记录时出现 -->
+            <div class="album-hit hidden" id="album-hit">
+              <div class="album-hit-head">
+                <span class="badge badge-success" id="album-hit-badge">已下载</span>
+                <span class="album-hit-time" id="album-hit-time"></span>
+              </div>
+              <div class="album-hit-body">
+                <div class="album-cover-wrap">
+                  <img id="album-hit-cover" class="album-cover" alt="封面">
+                  <div class="album-cover-fallback" id="album-hit-cover-fallback">JM</div>
+                </div>
+                <div class="album-hit-info">
+                  <div class="album-hit-id" id="album-hit-id"></div>
+                  <div class="album-hit-name" id="album-hit-name"></div>
+                  <div class="album-hit-actions">
+                    <button class="btn btn-outline btn-sm" id="btn-open-album">打开这本</button>
+                    <button class="btn btn-ghost btn-sm" id="btn-redownload">重新下载</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="divider"></div>
 
             <div class="field">
@@ -283,6 +305,22 @@
             <div class="card-desc">橙色＝该目录占用 · 紫色＝同盘其它占用 · 灰色＝可用空间</div>
             <div id="disk-detail"></div>
             <button class="btn btn-outline btn-block" id="btn-disk-refresh" style="margin-top:16px">重新统计</button>
+          </section>
+
+          <section class="card card-pad">
+            <div class="card-head">
+              <h2>清除所有下载数据</h2>
+              <span class="badge badge-danger">危险操作</span>
+            </div>
+            <div class="card-desc">删除下载目录与收藏目录里的全部漫画和日志，并清空图片工作区。</div>
+
+            <button id="btn-wipe" class="btn btn-danger btn-block">清除所有下载数据</button>
+
+            <p class="hint" style="margin-top:14px">
+              点一下会先弹出两次确认：<br>
+              第一次说明「删除后无法找回」，第二次再问「确定删除」。<br>
+              清空后可以照常继续下载，不影响程序本身。
+            </p>
           </section>
 
           <section class="card card-pad">

@@ -206,7 +206,7 @@
     const isId = /^\d+$/.test(r.id);
     const missing = r.exists ? '' : '<span class="badge badge-warn">文件缺失</span>';
 
-    return '<article class="record" data-file="' + escapeHtml(r.file) + '" data-id="' + escapeHtml(r.id) + '">' +
+    return '<article class="record" data-file="' + escapeHtml(r.file) + '" data-id="' + escapeHtml(r.id) + '" data-dir="' + escapeHtml(r.dir || '') + '">' +
       '<button class="icon-btn star ' + (starred ? 'on' : '') + '" title="' +
       (starred ? '取消收藏' : '收藏到 ' + escapeHtml(PATHS.fav)) + '">' + (starred ? STAR_ON : STAR_OUT) + '</button>' +
       '<div class="record-main" title="点击用系统默认程序打开">' +
@@ -274,8 +274,8 @@
   }
 
   /* ---------------- 记录操作 ---------------- */
-  async function openRecordFile(file, scope) {
-    const data = await postJson('/api/open-file', { file: file, scope: scope });
+  async function openRecordFile(file, scope, dir) {
+    const data = await postJson('/api/open-file', { file: file, scope: scope, dir: dir || '' });
     if (!data.ok) toast(data.error || '打开失败', true);
   }
 
@@ -301,8 +301,9 @@
     if (starred) {
       const okConfirm = confirm(
         '取消收藏？\n\n' + file +
-        '\n\n· 将从收藏夹删除该文件' +
-        '\n· 并抹去收藏记录（下载目录中的文件不受影响）');
+        '\n\n· 只从收藏列表移除' +
+        '\n· 下载目录里的 PDF 不受影响' +
+        '\n· 旧版本复制到收藏目录里的副本不会被删除');
       if (!okConfirm) return;
 
       const data = await postJson('/api/delete', { file: file, id: jmId, scope: 'fav' });
@@ -311,12 +312,39 @@
     } else {
       const data = await postJson('/api/favorite', { file: file, id: jmId });
       if (!data.ok) { toast(data.error || '收藏失败', true); return; }
-      toast(data.already ? '该文件已在收藏夹中' : '已收藏到 ' + PATHS.fav);
-      if (data.warning) toast(data.warning, true);
+      toast(data.already ? '该文件已在收藏中' : '已收藏（仅记录文件名，不复制文件）');
     }
 
     loadRecords();
     if (state.view === 'favorites') loadFavorites();
+    loadDisk(true);
+  }
+
+  /* ---------------- 清除所有下载数据 ---------------- */
+  async function wipeAll() {
+    const first = confirm(
+      '清除所有下载数据\n\n' +
+      '将会删除：\n' +
+      '· 下载目录里的全部漫画 PDF\n' +
+      '· 下载记录 jm_log.txt\n' +
+      '· 收藏记录（收藏目录里的 jm_fav_log.txt）\n' +
+      '· 图片工作区里的临时文件\n\n' +
+      '⚠ 删除后无法找回，也不会进回收站。\n\n确定继续吗？');
+    if (!first) return;
+
+    const second = confirm('再次确认\n\n确定删除所有已下载的内容吗？\n这一步执行完就再也恢复不了了。');
+    if (!second) return;
+
+    const data = await postJson('/api/wipe', {});
+    if (!data.ok) { toast(data.error || '清除失败', true); return; }
+
+    const files = (data.pdf_files || 0) + (data.fav_files || 0);
+    toast('已清除：PDF ' + files + ' 个、日志 ' + (data.logs || 0) + ' 个');
+
+    $('album-id').value = '';
+    renderAlbumHit(null);
+    loadRecords();
+    loadFavorites();
     loadDisk(true);
   }
 
@@ -328,13 +356,15 @@
     const jmId = record.getAttribute('data-id');
     const scope = listEl.getAttribute('data-scope') || 'dl';
 
+    const dir = record.getAttribute('data-dir') || '';
+
     if (event.target.closest('.star')) {
       const starred = event.target.closest('.star').classList.contains('on');
       toggleFavorite(file, jmId, starred);
     } else if (event.target.closest('.trash')) {
       deleteRecord(file, jmId, scope);
     } else if (event.target.closest('.record-main')) {
-      openRecordFile(file, scope);
+      openRecordFile(file, scope, dir);
     }
   }
 
@@ -402,6 +432,9 @@
     } else if (s.ok === false) {
       elStatusText.textContent = '上次任务失败';
       elStatusText.className = 'badge badge-danger';
+    } else if (hitRecord) {
+      elStatusText.textContent = '已下载';
+      elStatusText.className = 'badge badge-success';
     } else if (s.ok === true) {
       elStatusText.textContent = '已完成';
       elStatusText.className = 'badge badge-success';
@@ -424,6 +457,8 @@
       lastFinishedAt = s.finished_at;
       if (s.ok === true) {
         toast('下载完成：' + (s.title || s.album_id));
+        // 刚下完这一本就不再显示「已下载」卡片，改显示「已完成 + 标题」
+        if (hitRecord && hitRecord.id === s.album_id) { renderAlbumHit(null); }
         loadRecords();
         loadDisk(true);
       } else if (s.ok === false) {
@@ -443,23 +478,118 @@
     }
   }
 
+  /* ---------------- 已下载识别 ---------------- */
+  let lookupTimer = null;
+  let lastLookupId = '';
+  let hitRecord = null;
+
+  function scheduleLookup(rawId) {
+    const id = (rawId || '').trim();
+    if (lookupTimer) clearTimeout(lookupTimer);
+
+    if (!id || !/^\d+$/.test(id)) {
+      renderAlbumHit(null);
+      return;
+    }
+    lookupTimer = setTimeout(function () { lookupAlbum(id); }, 380);
+  }
+
+  async function lookupAlbum(id) {
+    try {
+      const res = await fetch('/api/lookup?id=' + encodeURIComponent(id), { cache: 'no-store' });
+      const data = await res.json();
+      if (!data.ok) { return; }
+      // 请求返回前用户可能已经改了输入
+      if ($('album-id').value.trim() !== id) { return; }
+      lastLookupId = id;
+      renderAlbumHit(data.found ? data.record : null);
+    } catch (e) { /* 静默 */ }
+  }
+
+  function renderAlbumHit(record) {
+    const box = $('album-hit');
+    hitRecord = record || null;
+
+    if (!record) {
+      box.classList.add('hidden');
+      if (!state.running) { setStatusBadge('空闲', 'badge'); }
+      return;
+    }
+
+    $('album-hit-id').textContent = record.id || '—';
+    $('album-hit-name').textContent = record.name || record.file;
+    $('album-hit-time').textContent = record.time ? '下载于 ' + record.time : '';
+
+    const img = $('album-hit-cover');
+    const fallback = $('album-hit-cover-fallback');
+    img.classList.add('hidden');
+    fallback.classList.remove('hidden');
+    img.onload = function () {
+      img.classList.remove('hidden');
+      fallback.classList.add('hidden');
+    };
+    img.onerror = function () {
+      img.classList.add('hidden');
+      fallback.classList.remove('hidden');
+    };
+    img.src = '/api/cover?file=' + encodeURIComponent(record.file);
+
+    box.classList.remove('hidden');
+    if (!state.running) { setStatusBadge('已下载', 'badge badge-success'); }
+  }
+
+  function setStatusBadge(text, className) {
+    const el = $('status-text');
+    if (!el) return;
+    el.textContent = text;
+    el.className = className;
+  }
+
   /* ---------------- 下载动作 ---------------- */
-  async function doDownload() {
+  async function doDownload(force) {
     const el = $('album-id');
     const id = el.value.trim();
     if (!id) { toast('请输入本子编号', true); el.focus(); return; }
     if (!/^\d+$/.test(id)) { toast('编号必须是纯数字', true); el.focus(); return; }
 
     $('btn-download').disabled = true;
-    const data = await postJson('/api/download', { id: id });
+    const data = await postJson('/api/download', { id: id, force: !!force });
+
     if (!data.ok) {
+      if (data.need_confirm && data.record) {
+        renderAlbumHit(data.record);
+        $('btn-download').disabled = false;
+        const ok = confirm(
+          '该本子已经下载过：\n\n' + (data.record.name || data.record.file) +
+          '\n\n重新下载会覆盖同名 PDF，确定吗？');
+        if (ok) { doDownload(true); }
+        return;
+      }
       toast(data.error || '启动下载失败', true);
       $('btn-download').disabled = false;
-    } else {
-      toast('已开始下载 ' + id);
-      lastLoggedCount = -1;
-      setTimeout(pollState, 400);
+      return;
     }
+
+    toast('已开始下载 ' + id);
+    lastLoggedCount = -1;
+    renderAlbumHit(null);
+    setTimeout(pollState, 400);
+  }
+
+  function bindAlbumHit() {
+    $('album-id').addEventListener('input', function (e) {
+      scheduleLookup(e.target.value);
+    });
+
+    $('btn-open-album').addEventListener('click', function () {
+      if (!hitRecord) return;
+      openRecordFile(hitRecord.file, 'dl');
+    });
+
+    $('btn-redownload').addEventListener('click', function () {
+      if (!hitRecord) return;
+      if (confirm('重新下载会覆盖同名 PDF，确定吗？')) { doDownload(true); }
+    });
   }
 
   /* ---------------- 设置 ---------------- */
@@ -728,6 +858,7 @@
   $('fav-search-id').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('fav-btn-search').click(); });
   $('fav-refresh').addEventListener('click', function () { loadFavorites(); loadDisk(true); toast('已刷新收藏记录'); });
 
+  $('btn-wipe').addEventListener('click', wipeAll);
   $('btn-save-settings').addEventListener('click', saveSettings);
   $('btn-reset-settings').addEventListener('click', resetSettings);
   $('btn-disk-refresh').addEventListener('click', function () { loadDisk(true); toast('已重新统计磁盘占用'); });
@@ -782,7 +913,17 @@
     } catch (e) { }
   }
 
+  bindAlbumHit();
   syncThemeIcon();
+
+  // 支持用 /?id=422869 直接带编号进来（方便分享/调试）
+  try {
+    const initialId = new URLSearchParams(location.search).get('id');
+    if (initialId && /^\d+$/.test(initialId)) {
+      $('album-id').value = initialId;
+      scheduleLookup(initialId);
+    }
+  } catch (e) { }
   updatePaths();
   loadRecords();
   loadDisk().then(maybeShowDiskHover);

@@ -28,7 +28,7 @@ import threading
 import time
 from datetime import datetime
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 # ----------------------------------------------------------------------------
 # 路径与运行参数
@@ -65,7 +65,7 @@ DISK_CACHE_SECONDS = 20     # 磁盘占用统计缓存
 # 版本与项目信息（「检查更新」用）
 # 发新版本时只要同步改 APP_VERSION，与 GitHub Release 的 tag 比较即可。
 # ----------------------------------------------------------------------------
-APP_VERSION = '1.1'
+APP_VERSION = '1.2'
 PROJECT_URL = 'https://github.com/whfy2003/jm-download-assistant'
 RELEASES_URL = PROJECT_URL + '/releases/latest'
 LATEST_RELEASE_API = ('https://api.github.com/repos/whfy2003/'
@@ -269,6 +269,9 @@ class _JmLoggerCapture(object):
 # ----------------------------------------------------------------------------
 _disk_cache = {'ts': 0.0, 'data': None}
 
+# PDF 首页封面缓存（文件名 → base64 PNG），避免每次轮询都重新渲染
+_cover_cache = {}
+
 
 def _dir_size(path):
     """递归统计目录大小（只读元数据，很快）。"""
@@ -466,8 +469,28 @@ def _enrich(records, base_dir, fav_files=None):
     for r in records:
         item = dict(r)
         item['exists'] = os.path.isfile(os.path.join(base_dir, r['file']))
+        item['dir'] = base_dir
         if fav_files is not None:
             item['fav'] = r['file'] in fav_files
+        out.append(item)
+    return out
+
+
+def _enrich_fav(records):
+    """
+    收藏记录的文件位置：优先下载目录（新版只记名字），
+    其次收藏目录（旧版本复制过去的副本）。
+    """
+    pdf_dir, fav_dir = get_pdf_dir(), get_fav_dir()
+    out = []
+    for r in records:
+        item = dict(r)
+        in_pdf = os.path.isfile(os.path.join(pdf_dir, r['file']))
+        in_fav = os.path.isfile(os.path.join(fav_dir, r['file']))
+        item['exists'] = in_pdf or in_fav
+        item['dir'] = pdf_dir if in_pdf else (fav_dir if in_fav else pdf_dir)
+        item['in_download'] = in_pdf
+        item['fav'] = True
         out.append(item)
     return out
 
@@ -523,11 +546,16 @@ def _sync_fav_directory():
 
 
 def _fav_records(scope='all'):
-    """收藏页数据 = 收藏日志 + 目录里实际存在但尚未登记的文件。"""
+    """
+    收藏页数据 = 收藏日志（只记文件名）+ 收藏目录里老版本遗留的副本。
+
+    新版收藏不复制 PDF，文件本体在下载目录，展示时由 _enrich_fav 去找。
+    """
     fav_dir, fav_log = get_fav_dir(), get_fav_log()
     records = _parse_records(_read_lines(fav_log, scope))
     logged = {r['file'] for r in records}
 
+    # 老版本复制到收藏目录、日志里却没有登记的副本，补上
     for name in sorted(_list_pdf_names(fav_dir) - logged):
         path = os.path.join(fav_dir, name)
         try:
@@ -541,6 +569,18 @@ def _fav_records(scope='all'):
 
     records.sort(key=lambda r: r['time'], reverse=True)
     return records
+
+
+def _find_downloaded(jm_id):
+    """在下载日志里精确找这个编号的记录；找不到返回 None。"""
+    jm_id = str(jm_id or '').strip()
+    if not jm_id:
+        return None
+    records = _parse_records(_read_lines(get_log_file(), 'all'))
+    for r in records:
+        if r['id'] == jm_id:
+            return r
+    return None
 
 
 def _safe_name(raw):
@@ -753,6 +793,14 @@ def api_download():
         if _state['running']:
             return jsonify(ok=False, error='已有下载任务在运行中，请稍候'), 409
 
+    # 已经下过就要求前端再确认一次（前端点「重新下载」时带 force=true）
+    if not data.get('force'):
+        existed = _find_downloaded(jm_id)
+        if existed is not None:
+            item = _enrich([existed], get_pdf_dir(), fav_files=_fav_file_set())[0]
+            return jsonify(ok=False, need_confirm=True, record=item,
+                           error='该本子已经下载过')
+
     _progress_reset('正在启动…')
     threading.Thread(target=_run_download, args=(jm_id,), daemon=True).start()
     return jsonify(ok=True, message='已开始下载 %s' % jm_id)
@@ -783,7 +831,7 @@ def api_favorites():
     records = _fav_records(scope)
     if q:
         records = [r for r in records if q in r['id']]
-    records = _enrich(records, get_fav_dir())
+    records = _enrich_fav(records)
 
     writable = _dir_writable(get_fav_dir())
     if not writable:
@@ -792,6 +840,55 @@ def api_favorites():
     return jsonify(ok=True, records=records, total=len(records),
                    scope=scope, q=q, fav_dir=get_fav_dir(),
                    writable=writable, warning=warning)
+
+
+@app.route('/api/lookup')
+def api_lookup():
+    """
+    输入编号后查一下是否已经下载过（精确匹配编号）。
+    没下载过返回 ok=True, found=False。
+    """
+    jm_id = (request.args.get('id') or '').strip()
+    record = _find_downloaded(jm_id)
+    if record is None:
+        return jsonify(ok=True, found=False, id=jm_id)
+
+    item = _enrich([record], get_pdf_dir(), fav_files=_fav_file_set())[0]
+    return jsonify(ok=True, found=True, record=item)
+
+
+@app.route('/api/cover')
+def api_cover():
+    """把下载目录里 PDF 的第一页渲染成 PNG，直接作为图片返回（给「已下载」卡片当封面）。"""
+    filename = _safe_name(request.args.get('file'))
+    if not filename:
+        return jsonify(ok=False, error='文件名无效'), 400
+
+    path = os.path.join(get_pdf_dir(), filename)
+    if not os.path.isfile(path):
+        return jsonify(ok=False, error='文件不存在'), 404
+
+    cached = _cover_cache.get(filename)
+    if cached:
+        return Response(cached, mimetype='image/png',
+                        headers={'Cache-Control': 'max-age=86400'})
+
+    try:
+        import fitz  # PyMuPDF
+        with fitz.open(path) as doc:
+            if doc.page_count <= 0:
+                return jsonify(ok=False, error='PDF 没有页面'), 400
+            page = doc.load_page(0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(0.26, 0.26))
+            data = pix.tobytes('png')
+    except Exception as e:
+        return jsonify(ok=False, error='%s: %s' % (type(e).__name__, e)), 500
+
+    if len(_cover_cache) > 80:
+        _cover_cache.clear()
+    _cover_cache[filename] = data
+    return Response(data, mimetype='image/png',
+                    headers={'Cache-Control': 'max-age=86400'})
 
 
 # ----------------------------------------------------------------------------
@@ -960,6 +1057,17 @@ def api_open_file():
         return jsonify(ok=False, error='文件名无效'), 400
 
     base_dir, _log = _dir_for_scope(data.get('scope'))
+
+    # 收藏记录（不复制文件）需要指定实际所在目录；只允许这两个已知目录
+    dir_opt = (data.get('dir') or '').strip()
+    if dir_opt:
+        allowed = {os.path.abspath(get_pdf_dir()).lower(),
+                   os.path.abspath(get_fav_dir()).lower()}
+        candidate = os.path.abspath(dir_opt)
+        if candidate.lower() not in allowed:
+            return jsonify(ok=False, error='目录不在允许范围内'), 400
+        base_dir = candidate
+
     path = os.path.join(base_dir, filename)
     if not os.path.isfile(path):
         return jsonify(ok=False, error='文件不存在：%s' % filename), 404
@@ -984,14 +1092,28 @@ def api_open_folder():
 
 @app.route('/api/delete', methods=['POST'])
 def api_delete():
-    """删除 PDF 文件，并从对应日志里抹去该文件的记录。"""
+    """
+    删除操作：
+      · scope=dl  → 删下载目录里的 PDF，并从下载日志抹去记录
+      · scope=fav → 只从收藏日志抹去这一条；文件在下载目录，不动
+    """
     data = request.get_json(silent=True) or {}
     filename = _safe_name(data.get('file'))
     jm_id = str(data.get('id', '')).strip()
     if not filename:
         return jsonify(ok=False, error='文件名无效'), 400
 
-    base_dir, log_path = _dir_for_scope(data.get('scope'))
+    scope = data.get('scope')
+
+    if scope == 'fav':
+        try:
+            lines_removed = _remove_log_entries(get_fav_log(), jm_id, filename)
+        except PermissionError:
+            return jsonify(ok=False, error='收藏日志不可写，取消收藏失败'), 500
+        return jsonify(ok=True, file_removed=False, log_only=True,
+                       lines_removed=lines_removed)
+
+    base_dir, log_path = _dir_for_scope(scope)
     path = os.path.join(base_dir, filename)
 
     file_removed = False
@@ -1014,37 +1136,78 @@ def api_delete():
 
 @app.route('/api/favorite', methods=['POST'])
 def api_favorite():
-    """把下载目录里的 PDF 复制到收藏夹，并写收藏日志。"""
+    """
+    收藏 = 在收藏目录的 jm_fav_log.txt 里记一行文件名，**不复制 PDF**。
+    文件留在下载目录，收藏页展示时直接去那里取。
+    """
     data = request.get_json(silent=True) or {}
     filename = _safe_name(data.get('file'))
     jm_id = str(data.get('id', '')).strip() or '-'
     if not filename:
         return jsonify(ok=False, error='文件名无效'), 400
 
-    pdf_dir, fav_dir, fav_log = get_pdf_dir(), get_fav_dir(), get_fav_log()
-    src = os.path.join(pdf_dir, filename)
+    src = os.path.join(get_pdf_dir(), filename)
     if not os.path.isfile(src):
-        return jsonify(ok=False, error='源文件不存在：%s' % filename), 404
+        return jsonify(ok=False, error='下载目录里没有这个文件：%s' % filename), 404
 
+    fav_dir, fav_log = get_fav_dir(), get_fav_log()
     os.makedirs(fav_dir, exist_ok=True)
-    dst = os.path.join(fav_dir, filename)
-    if os.path.exists(dst):
-        return jsonify(ok=True, already=True, message='该文件已在收藏夹中')
+
+    logged = {r['file'] for r in _parse_records(_read_lines(fav_log, 'all'))}
+    if filename in logged:
+        return jsonify(ok=True, already=True, copy=False, message='该文件已在收藏中')
 
     try:
-        shutil.copy2(src, dst)
+        _append_log_line(fav_log, jm_id, filename)
     except PermissionError:
         return jsonify(ok=False, error='收藏夹目录没有写入权限，收藏失败。'), 500
     except Exception as e:
         return jsonify(ok=False, error='收藏失败：%s' % e), 500
 
-    warning = None
-    try:
-        _append_log_line(fav_log, jm_id, filename)
-    except PermissionError:
-        warning = '文件已复制，但收藏日志登记失败（目录不可写）'
+    return jsonify(ok=True, already=False, copy=False,
+                   message='已收藏（仅记录文件名，不复制文件）')
 
-    return jsonify(ok=True, already=False, message='已收藏', warning=warning)
+
+@app.route('/api/wipe', methods=['POST'])
+def api_wipe():
+    """删除下载目录与收藏目录里的全部内容（PDF 与日志），并清空图片工作区。"""
+    detail = {'pdf_files': 0, 'fav_files': 0, 'logs': 0, 'errors': []}
+
+    for key, directory in (('pdf', get_pdf_dir()), ('fav', get_fav_dir())):
+        if not os.path.isdir(directory):
+            continue
+        for name in os.listdir(directory):
+            path = os.path.join(directory, name)
+            try:
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+                lower = name.lower()
+                if lower.endswith('.pdf'):
+                    detail[key + '_files'] += 1
+                elif lower.endswith('.txt'):
+                    detail['logs'] += 1
+            except Exception as e:
+                detail['errors'].append('%s：%s' % (name, e))
+
+    if os.path.isdir(WORK_DIR):
+        for name in os.listdir(WORK_DIR):
+            try:
+                path = os.path.join(WORK_DIR, name)
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+            except Exception:
+                pass
+
+    _cover_cache.clear()
+    _disk_cache['data'] = None
+    with _state_lock:
+        _state['logs'] = []
+
+    return jsonify(ok=True, **detail)
 
 
 def main():
