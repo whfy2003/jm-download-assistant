@@ -210,7 +210,7 @@ start-jm-web.cmd
 
 ## 致谢
 
-- **[JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python)** —— 本项目的全部下载能力来自该项目，感谢作者 hect0x7
+- **[JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python)** —— 本项目的全部下载能力来自该项目，感谢作者 @hect0x7
 - [jm-view-server](https://github.com/hect0x7/jm-view-server) —— 界面设计参考了它的设计令牌
 - [curl-cffi](https://github.com/lexiforest/curl_cffi) / [Flask](https://flask.palletsprojects.com/) / [img2pdf](https://github.com/josch/img2pdf) / [PyInstaller](https://pyinstaller.org/)
 
