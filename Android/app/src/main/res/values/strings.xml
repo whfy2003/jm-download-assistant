@@ -52,4 +52,5 @@
     <string name="brand_sub">移动端</string>
     <string name="status_downloaded">已下载</string>
     <string name="project_url">https://github.com/whfy2003/jm-download-assistant</string>
+    <string name="btn_pick_pdf_dir">选择下载目录</string>
 </resources>

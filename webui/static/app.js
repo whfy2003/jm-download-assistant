@@ -16,10 +16,11 @@
 
   const state = {
     view: 'download',
-    dl: { q: '', scope: 'all' },
-    fav: { q: '', scope: 'all' },
+    dl: { q: '', scope: 'all', sort: 'time' },
+    fav: { q: '', scope: 'all', sort: 'time' },
   };
 
+  const recordIndex = {};
   let toastTimer = null;
   let lastFinishedAt = '';
   let lastLoggedCount = -1;
@@ -206,21 +207,86 @@
     const isId = /^\d+$/.test(r.id);
     const missing = r.exists ? '' : '<span class="badge badge-warn">文件缺失</span>';
 
+    // 文件不在本机就不去请求封面，省一次 404
+    const coverAttrs = r.exists === false ? '' :
+      ' data-cover="' + escapeHtml(r.file) + '"' +
+      ' data-cover-dir="' + escapeHtml(r.dir || '') + '"';
+
     return '<article class="record" data-file="' + escapeHtml(r.file) + '" data-id="' + escapeHtml(r.id) + '" data-dir="' + escapeHtml(r.dir || '') + '">' +
       '<button class="icon-btn star ' + (starred ? 'on' : '') + '" title="' +
       (starred ? '取消收藏' : '收藏到 ' + escapeHtml(PATHS.fav)) + '">' + (starred ? STAR_ON : STAR_OUT) + '</button>' +
+      '<div class="record-cover"><img alt=""' + coverAttrs + '></div>' +
       '<div class="record-main" title="点击用系统默认程序打开">' +
       '<div class="record-id' + (isId ? '' : ' muted') + '">' + escapeHtml(r.id) + '</div>' +
       '<div class="record-name">' + escapeHtml(r.name) + '</div>' +
-      '<div class="record-time">' + escapeHtml(r.time) + '</div>' +
+      (r.author ? '<div class="record-author">作者：' + escapeHtml(r.author) + '</div>' : '') +
+      ((r.tags && r.tags.length) ? '<div class="record-tags">' +
+        r.tags.slice(0, 4).map(function (tag) { return '<span>' + escapeHtml(tag) + '</span>'; }).join('') +
+        (r.tags.length > 4
+          ? '<button class="tag-more" data-key="' + escapeHtml(r.file) + '" data-tags="' + escapeHtml(r.tags.join('|')) + '" title="查看全部标签">查看更多</button>'
+          : '') +
+        '</div>' : '') +
+      '<div class="record-time">' + escapeHtml(r.time) +
+        (r.likes ? ' · 赞 ' + escapeHtml(r.likes) : '') + '</div>' +
       (missing ? '<div class="record-meta">' + missing + '</div>' : '') +
       '</div>' +
       '<button class="icon-btn trash" title="删除文件并抹去记录">' + TRASH + '</button>' +
       '</article>';
   }
 
+  /* 封面懒加载：滚到附近才去渲染，70 条记录不会一次拉 70 张图 */
+  let coverObserver = null;
+
+  function observeCovers() {
+    const imgs = document.querySelectorAll('.record-cover img[data-cover]:not([data-observed])');
+    if (!imgs.length) {
+      return;
+    }
+
+    if (typeof IntersectionObserver !== 'function') {
+      // 老浏览器直接全部加载
+      imgs.forEach(function (img) {
+        img.setAttribute('data-observed', '1');
+        loadCover(img);
+      });
+      return;
+    }
+
+    if (!coverObserver) {
+      coverObserver = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (!entry.isIntersecting) {
+            return;
+          }
+          coverObserver.unobserve(entry.target);
+          loadCover(entry.target);
+        });
+      }, { rootMargin: '240px 0px' });
+    }
+
+    imgs.forEach(function (img) {
+      img.setAttribute('data-observed', '1');
+      coverObserver.observe(img);
+    });
+  }
+
+  function loadCover(img) {
+    const file = img.getAttribute('data-cover');
+    const dir = img.getAttribute('data-cover-dir') || '';
+    if (!file) {
+      return;
+    }
+
+    img.onload = function () { img.classList.add('loaded'); };
+    img.onerror = function () { img.style.visibility = 'hidden'; };
+    img.src = '/api/cover?file=' + encodeURIComponent(file)
+      + (dir ? '&dir=' + encodeURIComponent(dir) : '');
+  }
+
   function renderInto(listEl, countEl, badgeEl, records, scope) {
-    badgeEl.textContent = state[scope === 'fav' ? 'fav' : 'dl'].scope === 'recent' ? '最近 500 条' : '全部记录';
+    if (badgeEl) {
+      badgeEl.textContent = state[scope === 'fav' ? 'fav' : 'dl'].scope === 'recent' ? '最近 500 条' : '全部记录';
+    }
 
     if (!records.length) {
       listEl.innerHTML = '<div class="empty">没有匹配的记录</div>';
@@ -228,7 +294,9 @@
       return;
     }
     listEl.innerHTML = records.map(function (r) { return recordHtml(r, scope); }).join('');
+    records.forEach(function (r) { recordIndex[r.file] = r; });
     countEl.textContent = '共 ' + records.length + ' 条记录';
+    observeCovers();
   }
 
   /* ---------------- 数据加载 ---------------- */
@@ -236,6 +304,7 @@
     const st = state.dl;
     const params = new URLSearchParams({ scope: st.scope });
     if (st.q) params.set('q', st.q);
+    if (st.sort) params.set('sort', st.sort);
 
     try {
       const res = await fetch('/api/records?' + params.toString(), { cache: 'no-store' });
@@ -250,6 +319,7 @@
     const st = state.fav;
     const params = new URLSearchParams({ scope: st.scope });
     if (st.q) params.set('q', st.q);
+    if (st.sort) params.set('sort', st.sort);
 
     try {
       const res = await fetch('/api/favorites?' + params.toString(), { cache: 'no-store' });
@@ -357,6 +427,18 @@
     const scope = listEl.getAttribute('data-scope') || 'dl';
 
     const dir = record.getAttribute('data-dir') || '';
+
+    if (event.target.closest('.tag-more')) {
+      const btn = event.target.closest('.tag-more');
+      hideTagTip();
+      const record = recordIndex[btn.getAttribute('data-key')];
+      if (record) {
+        showRecordPreview(record);
+      } else {
+        showAllTags((btn.getAttribute('data-tags') || '').split('|').filter(Boolean));
+      }
+      return;
+    }
 
     if (event.target.closest('.star')) {
       const starred = event.target.closest('.star').classList.contains('on');
@@ -522,8 +604,17 @@
 
     const img = $('album-hit-cover');
     const fallback = $('album-hit-cover-fallback');
+
+    // 每次重新渲染都要换 URL：同一个 src 重复赋值浏览器不会再触发 onload，
+    // 结果就是第二次输入同一编号时封面停在占位图上。
+    const coverUrl = '/api/cover?file=' + encodeURIComponent(record.file)
+      + '&v=' + Date.now();
+
     img.classList.add('hidden');
+    img.removeAttribute('src');
     fallback.classList.remove('hidden');
+    fallback.textContent = '载入中…';
+
     img.onload = function () {
       img.classList.remove('hidden');
       fallback.classList.add('hidden');
@@ -531,8 +622,9 @@
     img.onerror = function () {
       img.classList.add('hidden');
       fallback.classList.remove('hidden');
+      fallback.textContent = 'JM';
     };
-    img.src = '/api/cover?file=' + encodeURIComponent(record.file);
+    img.src = coverUrl;
 
     box.classList.remove('hidden');
     if (!state.running) { setStatusBadge('已下载', 'badge badge-success'); }
@@ -543,6 +635,251 @@
     if (!el) return;
     el.textContent = text;
     el.className = className;
+  }
+
+
+  /* ---------------- 预览封面 ---------------- */
+  async function doPreview() {
+    const el = $('album-id');
+    const id = el.value.trim();
+    if (!id) { toast('请输入本子编号', true); el.focus(); return; }
+    if (!/^\d+$/.test(id)) { toast('编号必须是纯数字', true); el.focus(); return; }
+
+    toast('正在获取封面…');
+    try {
+      const res = await fetch('/api/preview?id=' + encodeURIComponent(id), { cache: 'no-store' });
+      const data = await res.json();
+      if (!data.ok) { toast(data.error || '预览失败', true); return; }
+      showPreview(data.album);
+    } catch (e) {
+      toast('预览失败：' + e.message, true);
+    }
+  }
+
+  function showPreview(album, coverSrc, options) {
+    options = options || {};
+    const box = $('preview-modal');
+    $('pv-id').textContent = album.id || '';
+    $('pv-name').textContent = album.title || '';
+    $('pv-meta').textContent = [
+      album.author ? '作者：' + album.author : '',
+      album.page_count ? album.page_count + ' 页' : '',
+      album.episodes ? album.episodes + ' 章' : '',
+      album.likes ? '赞 ' + album.likes : '',
+      album.views ? '看 ' + album.views : ''
+    ].filter(Boolean).join(' · ');
+
+    $('pv-tags').innerHTML = (album.tags || [])
+      .map(function (x) { return '<span>' + escapeHtml(x) + '</span>'; }).join('');
+    $('pv-desc').textContent = album.description || '';
+
+    const img = $('pv-cover');
+    const fallback = $('pv-cover-fallback');
+    img.classList.add('hidden');
+    fallback.classList.remove('hidden');
+    fallback.textContent = album.cover_error ? '封面获取失败' : '载入中…';
+
+    const src = coverSrc || (album.cover_base64
+      ? 'data:image/jpeg;base64,' + album.cover_base64 : '');
+    if (src) {
+      img.onload = function () {
+        img.classList.remove('hidden');
+        fallback.classList.add('hidden');
+      };
+      img.onerror = function () {
+        fallback.textContent = '封面加载失败';
+      };
+      img.src = src;
+    } else {
+      fallback.textContent = '暂无封面';
+    }
+
+    if (options.openFile) {
+      $('pv-cancel').textContent = '关闭';
+      $('pv-download').textContent = '打开';
+      $('pv-download').onclick = function () {
+        box.classList.add('hidden');
+        openRecordFile(options.file, 'dl', options.dir || '');
+      };
+    } else {
+      $('pv-cancel').textContent = '取消';
+      $('pv-download').textContent = '开始下载';
+      $('pv-download').onclick = function () {
+        box.classList.add('hidden');
+        $('album-id').value = album.id || '';
+        doDownload();
+      };
+    }
+
+    box.classList.remove('hidden');
+  }
+
+
+  /* ---------------- 排序切换 ---------------- */
+  // 按钮显示的是「点击后会切换成什么」，当前状态不会造成歧义
+  function sortLabel(current) {
+    return current === 'likes' ? '切换为按时间排序' : '切换为按点赞排序';
+  }
+
+  function bindSort() {
+    $('dl-sort').addEventListener('click', function () {
+      state.dl.sort = state.dl.sort === 'likes' ? 'time' : 'likes';
+      $('dl-sort').textContent = sortLabel(state.dl.sort);
+      loadRecords();
+    });
+    $('fav-sort').addEventListener('click', function () {
+      state.fav.sort = state.fav.sort === 'likes' ? 'time' : 'likes';
+      $('fav-sort').textContent = sortLabel(state.fav.sort);
+      loadFavorites();
+    });
+  }
+
+  /* ---------------- 详情刷新 ---------------- */
+  let detailTimer = null;
+
+  async function refreshDetails() {
+    const data = await postJson('/api/refresh-details', {});
+    if (!data.ok) { toast(data.error || '无法开始详情刷新', true); return; }
+    toast('开始刷新详情…');
+    pollDetailProgress();
+  }
+
+  async function pollDetailProgress() {
+    try {
+      const res = await fetch('/api/refresh-details/status', { cache: 'no-store' });
+      const st = await res.json();
+      if (!st.running) {
+        if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; }
+        const ends = st.done > 0;
+        if (ends) {
+          detailCacheReset();
+          toast(st.error ? ('详情刷新结束，最后一条出错：' + st.error)
+                         : ('详情刷新完成，共更新 ' + st.done + ' 部'));
+          loadRecords();
+          loadFavorites();
+        }
+        return;
+      }
+      toast('详情刷新中：' + st.done + ' / ' + st.total + (st.current ? '（' + st.current + '）' : ''));
+      detailTimer = setTimeout(pollDetailProgress, 1200);
+    } catch (e) {
+      detailTimer = setTimeout(pollDetailProgress, 2000);
+    }
+  }
+
+  function detailCacheReset() {
+    loadRecords();
+    if (state.view === 'favorites') loadFavorites();
+  }
+
+
+
+  /* ---------------- 记录项：查看全部标签 ---------------- */
+  function showRecordPreview(r) {
+    const coverSrc = r.exists === false ? '' :
+      '/api/cover?file=' + encodeURIComponent(r.file) +
+      (r.dir ? '&dir=' + encodeURIComponent(r.dir) : '');
+
+    showPreview({
+      id: r.id,
+      title: r.name,
+      author: r.author || '',
+      page_count: r.pages || '',
+      likes: r.likes || '',
+      views: r.views || '',
+      tags: r.tags || [],
+      description: '',
+    }, coverSrc, { openFile: true, file: r.file, dir: r.dir || '' });
+  }
+
+  let tagTip = null;
+
+
+  // 浮层定位：默认在鼠标正上方（水平居中、垂直间隔 12px），两侧/顶部越界时自动挪回
+  function tipLeft(clientX) {
+    if (!tagTip) return 8;
+    const rect = tagTip.getBoundingClientRect();
+    const left = clientX - rect.width / 2;
+    return Math.max(8, Math.min(left, window.innerWidth - rect.width - 8));
+  }
+
+  function tipTop(clientY) {
+    if (!tagTip) return 8;
+    const rect = tagTip.getBoundingClientRect();
+    let top = clientY - rect.height - 12;
+    if (top < 8) {
+      top = clientY + 18;               // 上方放不下就翻到下方
+    }
+    return Math.max(8, Math.min(top, window.innerHeight - rect.height - 8));
+  }
+
+  function showTagTip(tags, x, y) {
+    hideTagTip();
+    tagTip = document.createElement('div');
+    tagTip.className = 'tag-tip';
+    tagTip.innerHTML = tags.map(function (tag) {
+      return '<span>' + escapeHtml(tag) + '</span>';
+    }).join('');
+    document.body.appendChild(tagTip);
+
+    tagTip.style.left = tipLeft(x) + 'px';
+    tagTip.style.top = tipTop(y) + 'px';
+  }
+
+  function hideTagTip() {
+    if (tagTip) {
+      tagTip.remove();
+      tagTip = null;
+    }
+  }
+
+  function bindTagTip() {
+    ['dl-records', 'fav-records'].forEach(function (id) {
+      const list = $(id);
+      if (!list) return;
+      list.addEventListener('mouseover', function (e) {
+        const btn = e.target.closest('.tag-more');
+        if (!btn) return;
+        const tags = (btn.getAttribute('data-tags') || '').split('|').filter(Boolean);
+        showTagTip(tags, e.clientX, e.clientY);
+      });
+      list.addEventListener('mousemove', function (e) {
+        if (!tagTip) return;
+        tagTip.style.left = tipLeft(e.clientX) + 'px';
+        tagTip.style.top = tipTop(e.clientY) + 'px';
+      });
+      list.addEventListener('mouseout', function (e) {
+        if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest('.tag-more')) {
+          hideTagTip();
+        }
+      });
+      list.addEventListener('scroll', hideTagTip, true);
+    });
+  }
+
+  function showAllTags(tags) {
+    const list = $('tag-all-list');
+    list.innerHTML = tags.map(function (tag) {
+      return '<span>' + escapeHtml(tag) + '</span>';
+    }).join('');
+    $('tag-modal').classList.remove('hidden');
+  }
+
+  function bindTagModal() {
+    $('tag-close').addEventListener('click', function () { $('tag-modal').classList.add('hidden'); });
+    $('tag-ok').addEventListener('click', function () { $('tag-modal').classList.add('hidden'); });
+    $('tag-modal').addEventListener('click', function (e) {
+      if (e.target === $('tag-modal')) { $('tag-modal').classList.add('hidden'); }
+    });
+  }
+
+  function bindPreview() {
+    $('btn-preview').addEventListener('click', doPreview);
+    $('pv-close').addEventListener('click', function () { $('preview-modal').classList.add('hidden'); });
+    $('pv-cancel').addEventListener('click', function () { $('preview-modal').classList.add('hidden'); });
+    $('preview-modal').addEventListener('click', function (e) {
+      if (e.target === $('preview-modal')) { $('preview-modal').classList.add('hidden'); }
+    });
   }
 
   /* ---------------- 下载动作 ---------------- */
@@ -832,6 +1169,12 @@
   });
 
   $('btn-download').addEventListener('click', doDownload);
+  bindPreview();
+  bindTagModal();
+  bindTagTip();
+  bindSort();
+  $('dl-detail-refresh').addEventListener('click', refreshDetails);
+  $('fav-detail-refresh').addEventListener('click', refreshDetails);
   $('album-id').addEventListener('keydown', function (e) { if (e.key === 'Enter') doDownload(); });
 
   $('dl-btn-search').addEventListener('click', function () {
@@ -915,6 +1258,28 @@
 
   bindAlbumHit();
   syncThemeIcon();
+
+  // 支持 /?q=少女&sort=likes 直接带搜索/排序进来
+  try {
+    const params = new URLSearchParams(location.search);
+    const initialQuery = params.get('q');
+    const initialSort = params.get('sort');
+    if (initialQuery) { state.dl.q = initialQuery; $('dl-search-id').value = initialQuery; }
+    if (initialSort === 'likes') {
+      state.dl.sort = 'likes';
+      $('dl-sort').textContent = sortLabel('likes');
+    }
+    if (initialQuery || initialSort) { loadRecords(); }
+  } catch (e) { }
+
+  // 支持用 /?preview=422869 直接打开预览（调试用）
+  try {
+    const previewId = new URLSearchParams(location.search).get('preview');
+    if (previewId && /^\d+$/.test(previewId)) {
+      $('album-id').value = previewId;
+      doPreview();
+    }
+  } catch (e) { }
 
   // 支持用 /?id=422869 直接带编号进来（方便分享/调试）
   try {

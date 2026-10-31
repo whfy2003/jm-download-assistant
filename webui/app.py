@@ -22,6 +22,7 @@ import io
 import json
 import logging
 import os
+import random
 import shutil
 import sys
 import threading
@@ -65,7 +66,7 @@ DISK_CACHE_SECONDS = 20     # 磁盘占用统计缓存
 # 版本与项目信息（「检查更新」用）
 # 发新版本时只要同步改 APP_VERSION，与 GitHub Release 的 tag 比较即可。
 # ----------------------------------------------------------------------------
-APP_VERSION = '1.2'
+APP_VERSION = '1.0.3'
 PROJECT_URL = 'https://github.com/whfy2003/jm-download-assistant'
 RELEASES_URL = PROJECT_URL + '/releases/latest'
 LATEST_RELEASE_API = ('https://api.github.com/repos/whfy2003/'
@@ -79,7 +80,8 @@ app = Flask(__name__,
 # 目录设置（可在设置页修改，持久化到 settings.json）
 # ----------------------------------------------------------------------------
 _settings_lock = threading.Lock()
-_settings = {'pdf_dir': DEFAULT_PDF_DIR, 'fav_dir': DEFAULT_FAV_DIR, 'avs': ''}
+_settings = {'pdf_dir': DEFAULT_PDF_DIR, 'fav_dir': DEFAULT_FAV_DIR, 'avs': '',
+             'app_version': '', 'domains': []}
 
 
 def _load_settings():
@@ -95,6 +97,10 @@ def _load_settings():
             _settings['fav_dir'] = data['fav_dir'].strip()
         if isinstance(data.get('avs'), str):
             _settings['avs'] = data['avs'].strip()
+        if isinstance(data.get('app_version'), str):
+            _settings['app_version'] = data['app_version'].strip()
+        if isinstance(data.get('domains'), list):
+            _settings['domains'] = [str(x).strip() for x in data['domains'] if str(x).strip()]
     except Exception as e:
         print('读取 settings.json 失败：%s' % e)
 
@@ -106,6 +112,70 @@ def _save_settings():
     except Exception as e:
         print('写入 settings.json 失败：%s' % e)
 
+
+# ----------------------------------------------------------------------------
+# 上游版本标识 / API 域名缓存
+# ----------------------------------------------------------------------------
+def _apply_cached_app_version() -> str:
+    """
+    把上次协商到的 APP_VERSION 注入 jmcomic 内存常量。
+
+    jmcomic 的 APP_VERSION 只是请求头 tokenparam 里的一个字段，
+    检测到更高版本时只改内存，进程退出就没了。这里启动时先填回去，
+    服务端返回相同版本时就不会再走一遍 change APP_VERSION。
+    """
+    cached = (_settings.get('app_version') or '').strip()
+    if not cached:
+        return ''
+    try:
+        import jmcomic
+        current = jmcomic.JmMagicConstants.APP_VERSION
+        if current and jmcomic.JmcomicText.compare_versions(cached, current) <= 0:
+            return current
+        jmcomic.JmMagicConstants.APP_VERSION = cached
+        return cached
+    except Exception:
+        return ''
+
+
+def _sync_app_version() -> str:
+    """jmcomic 在内存里换过版本后写回 settings.json。"""
+    try:
+        import jmcomic
+        current = jmcomic.JmMagicConstants.APP_VERSION
+        if current and current != (_settings.get('app_version') or ''):
+            _settings['app_version'] = current
+            _save_settings()
+        return current or ''
+    except Exception:
+        return ''
+
+
+def _apply_cached_domains() -> list:
+    """把上次缓存的域名列表注入 jmcomic，跳过阻塞式的域名探测。"""
+    cached = _settings.get('domains') or []
+    if not cached:
+        return []
+    try:
+        from jmcomic import JmModuleConfig
+        JmModuleConfig.DOMAIN_API_LIST = list(cached)
+        JmModuleConfig.DOMAIN_API_UPDATED_LIST = list(cached)
+        return list(cached)
+    except Exception:
+        return []
+
+
+def _sync_domains() -> list:
+    """jmcomic 探测到新域名后写回 settings.json（无变化不写盘）。"""
+    try:
+        from jmcomic import JmModuleConfig
+        updated = [str(x) for x in (JmModuleConfig.DOMAIN_API_UPDATED_LIST or [])]
+        if updated and sorted(updated) != sorted(_settings.get('domains') or []):
+            _settings['domains'] = updated
+            _save_settings()
+        return updated
+    except Exception:
+        return []
 
 def get_pdf_dir():
     return _settings['pdf_dir']
@@ -464,6 +534,144 @@ def _remove_log_entries(log_path, jm_id, filename):
     return removed
 
 
+# ----------------------------------------------------------------------------
+# 漫画详情（下载目录/日志/<编号>.txt）
+# ----------------------------------------------------------------------------
+DETAIL_SUBDIR = '日志'
+_detail_cache = {}
+
+
+def _detail_dir():
+    return os.path.join(get_pdf_dir(), DETAIL_SUBDIR)
+
+
+def _detail_path(jm_id):
+    jm_id = str(jm_id or '').strip()
+    if not jm_id or jm_id == '-':
+        return None
+    safe = ''.join(c for c in jm_id if c.isdigit()) or jm_id
+    return os.path.join(_detail_dir(), safe + '.txt')
+
+
+def _save_detail(detail):
+    """把一部漫画的详情写成 日志/<编号>.txt。"""
+    jm_id = str(detail.get('id') or '').strip()
+    path = _detail_path(jm_id)
+    if not path:
+        return False
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lines = [
+            '编号: %s' % jm_id,
+            '标题: %s' % (detail.get('title') or ''),
+            '作者: %s' % (detail.get('author') or ''),
+            '点赞: %s' % (detail.get('likes') or ''),
+            '浏览: %s' % (detail.get('views') or ''),
+            '页数: %s' % (detail.get('pages') or ''),
+            '标签: %s' % '、'.join(detail.get('tags') or []),
+            '更新: %s' % _now(),
+        ]
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        _detail_cache[jm_id] = {
+            'id': jm_id,
+            'title': detail.get('title') or '',
+            'author': detail.get('author') or '',
+            'likes': detail.get('likes') or '',
+            'views': detail.get('views') or '',
+            'pages': detail.get('pages') or '',
+            'tags': list(detail.get('tags') or []),
+            'updated': _now(),
+        }
+        return True
+    except Exception as e:
+        print('写入详情失败 %s：%s' % (jm_id, e))
+        return False
+
+
+def _read_detail(jm_id):
+    """读取 日志/<编号>.txt；没有就返回 None（带内存缓存）。"""
+    jm_id = str(jm_id or '').strip()
+    if jm_id in _detail_cache:
+        return _detail_cache[jm_id]
+
+    path = _detail_path(jm_id)
+    result = None
+    if path and os.path.isfile(path):
+        try:
+            data = {}
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or ':' not in line:
+                        continue
+                    key, value = line.split(':', 1)
+                    data[key.strip()] = value.strip()
+            result = {
+                'id': data.get('编号', jm_id),
+                'title': data.get('标题', ''),
+                'author': data.get('作者', ''),
+                'likes': data.get('点赞', ''),
+                'views': data.get('浏览', ''),
+                'pages': data.get('页数', ''),
+                'tags': [x for x in (data.get('标签') or '').split('、') if x],
+                'updated': data.get('更新', ''),
+            }
+        except Exception:
+            result = None
+
+    _detail_cache[jm_id] = result
+    return result
+
+
+def _attach_detail(item):
+    """把详情字段并进一条记录。"""
+    detail = _read_detail(item.get('id'))
+    if detail:
+        item['author'] = detail.get('author', '')
+        item['tags'] = detail.get('tags', [])
+        item['likes'] = detail.get('likes', '')
+        item['views'] = detail.get('views', '')
+        item['pages'] = detail.get('pages', '')
+        item['has_detail'] = True
+    else:
+        item.setdefault('author', '')
+        item.setdefault('tags', [])
+        item.setdefault('likes', '')
+        item.setdefault('views', '')
+        item.setdefault('pages', '')
+        item['has_detail'] = False
+    return item
+
+
+def _match_query(item, q):
+    """中文/编号/标题/作者/标签 任意子串匹配。"""
+    if not q:
+        return True
+    q = q.lower()
+    if q in str(item.get('id', '')).lower():
+        return True
+    if q in str(item.get('name', '')).lower():
+        return True
+    if q in str(item.get('author', '')).lower():
+        return True
+    for tag in item.get('tags') or []:
+        if q in str(tag).lower():
+            return True
+    return False
+
+
+def _sort_records(records, sort):
+    """sort=likes 按点赞数倒序；否则按时间倒序。"""
+    if sort == 'likes':
+        def likes_key(item):
+            try:
+                return int(str(item.get('likes') or '0').replace(',', '').strip() or 0)
+            except Exception:
+                return 0
+        return sorted(records, key=likes_key, reverse=True)
+    return sorted(records, key=lambda x: x.get('time', ''), reverse=True)
+
 def _enrich(records, base_dir, fav_files=None):
     out = []
     for r in records:
@@ -472,6 +680,7 @@ def _enrich(records, base_dir, fav_files=None):
         item['dir'] = base_dir
         if fav_files is not None:
             item['fav'] = r['file'] in fav_files
+        _attach_detail(item)
         out.append(item)
     return out
 
@@ -491,6 +700,7 @@ def _enrich_fav(records):
         item['dir'] = pdf_dir if in_pdf else (fav_dir if in_fav else pdf_dir)
         item['in_download'] = in_pdf
         item['fav'] = True
+        _attach_detail(item)
         out.append(item)
     return out
 
@@ -503,7 +713,24 @@ def _list_pdf_names(directory):
 
 
 def _fav_file_set():
-    return _list_pdf_names(get_fav_dir())
+    """
+    收藏过的文件名集合。
+
+    v1.2 起收藏不再复制 PDF，只在 jm_fav_log.txt 里记一行文件名，
+    所以不能只看「收藏目录里有什么文件」——那样永远是空集，
+    下载列表里的星标就永远不会变成实心。
+
+    这里以收藏日志为准，并兼容旧版本复制到收藏目录里的副本。
+    """
+    names = set()
+    try:
+        for record in _parse_records(_read_lines(get_fav_log(), 'all')):
+            if record.get('file'):
+                names.add(record['file'])
+    except Exception:
+        pass
+    names |= _list_pdf_names(get_fav_dir())
+    return names
 
 
 def _dir_writable(path):
@@ -776,6 +1003,10 @@ def api_state():
         payload['logs'] = list(_state['logs'])
         payload['progress'] = dict(_state['progress'])
     payload['pdf_dir'] = get_pdf_dir()
+    # 顺手把协商出来的版本标识 / 域名写回 settings.json
+    payload['app_version'] = _sync_app_version()
+    payload['domains'] = _sync_domains()
+    payload['detail_refresh'] = dict(_detail_refresh)
     return jsonify(payload)
 
 
@@ -813,34 +1044,157 @@ def api_download():
 def api_records():
     q = (request.args.get('q') or '').strip()
     scope = 'recent' if request.args.get('scope') == 'recent' else 'all'
+    sort = request.args.get('sort', 'time')
 
     records = _parse_records(_read_lines(get_log_file(), scope))
-    if q:
-        records = [r for r in records if q in r['id']]
     records = _enrich(records, get_pdf_dir(), fav_files=_fav_file_set())
+    if q:
+        records = [r for r in records if _match_query(r, q)]
+    records = _sort_records(records, sort)
 
-    return jsonify(ok=True, records=records, total=len(records), scope=scope, q=q)
+    return jsonify(ok=True, records=records, total=len(records),
+                   scope=scope, q=q, sort=sort)
 
 
 @app.route('/api/favorites')
 def api_favorites():
     q = (request.args.get('q') or '').strip()
     scope = 'recent' if request.args.get('scope') == 'recent' else 'all'
+    sort = request.args.get('sort', 'time')
 
     _added, warning = _sync_fav_directory()
     records = _fav_records(scope)
-    if q:
-        records = [r for r in records if q in r['id']]
     records = _enrich_fav(records)
+    if q:
+        records = [r for r in records if _match_query(r, q)]
+    records = _sort_records(records, sort)
 
     writable = _dir_writable(get_fav_dir())
     if not writable:
         warning = warning or '收藏夹目录没有写入权限：可以查看，但收藏/删除会失败'
 
     return jsonify(ok=True, records=records, total=len(records),
-                   scope=scope, q=q, fav_dir=get_fav_dir(),
+                   scope=scope, q=q, sort=sort, fav_dir=get_fav_dir(),
                    writable=writable, warning=warning)
 
+
+# ----------------------------------------------------------------------------
+# 详情刷新：给还没有 日志/<编号>.txt 的漫画补抓详情
+# ----------------------------------------------------------------------------
+_detail_refresh = {'running': False, 'done': 0, 'total': 0, 'current': '', 'error': ''}
+
+
+def _refresh_details_worker():
+    try:
+        ids = []
+        for log_path in (get_log_file(), get_fav_log()):
+            for r in _parse_records(_read_lines(log_path, 'all')):
+                jm_id = str(r.get('id') or '').strip()
+                if jm_id and jm_id != '-' and jm_id not in ids:
+                    ids.append(jm_id)
+
+        todo = [i for i in ids if _read_detail(i) is None]
+        _detail_refresh.update({'total': len(todo), 'done': 0, 'error': ''})
+
+        if not todo:
+            return
+
+        option = _build_option()
+        client = option.build_jm_client()
+
+        for index, jm_id in enumerate(todo):
+            _detail_refresh['current'] = jm_id
+            try:
+                album = client.get_album_detail(jm_id)
+                authors = getattr(album, 'authors', None) or []
+                tags = getattr(album, 'tags', None) or []
+                _save_detail({
+                    'id': str(album.album_id),
+                    'title': album.name,
+                    'author': '、'.join(authors) if authors else getattr(album, 'author', ''),
+                    'likes': getattr(album, 'likes', ''),
+                    'views': getattr(album, 'views', ''),
+                    'pages': int(getattr(album, 'page_count', 0) or 0),
+                    'tags': [str(x) for x in tags],
+                })
+            except Exception as e:
+                _detail_refresh['error'] = '%s: %s' % (jm_id, e)
+            _detail_refresh['done'] = index + 1
+
+            # 上游对高并发不友好，每部之间随机停 0.1~2 秒
+            time.sleep(random.uniform(0.1, 2.0))
+    finally:
+        _detail_refresh['running'] = False
+        _detail_refresh['current'] = ''
+
+
+@app.route('/api/refresh-details', methods=['POST'])
+def api_refresh_details():
+    with _state_lock:
+        if _detail_refresh['running']:
+            return jsonify(ok=False, error='详情刷新已经在进行中'), 409
+        _detail_refresh.update({'running': True, 'done': 0, 'total': 0,
+                                'current': '', 'error': ''})
+
+    threading.Thread(target=_refresh_details_worker, daemon=True).start()
+    return jsonify(ok=True, message='开始刷新详情')
+
+
+@app.route('/api/refresh-details/status')
+def api_refresh_details_status():
+    return jsonify(ok=True, **(dict(_detail_refresh)))
+
+
+@app.route('/api/preview')
+def api_preview():
+    """预览本子：标题 / 作者 / 页数 / 章节 / 标签 / 封面（base64）。"""
+    import base64
+
+    jm_id = (request.args.get('id') or '').strip()
+    if not jm_id:
+        return jsonify(ok=False, error='请输入本子编号'), 400
+    if not jm_id.isdigit():
+        return jsonify(ok=False, error='编号必须是纯数字'), 400
+
+    try:
+        import jmcomic
+        option = _build_option()
+        client = option.build_jm_client()
+        album = client.get_album_detail(jm_id)
+    except Exception as e:
+        return jsonify(ok=False, error='%s: %s' % (type(e).__name__, e)), 500
+
+    cover_b64 = ''
+    cover_url = ''
+    cover_error = ''
+    try:
+        cover_url = jmcomic.JmcomicText.get_album_cover_url(jm_id)
+        resp = client.get_jm_image(cover_url)
+        if resp.is_success:
+            cover_b64 = base64.b64encode(resp.content).decode('ascii')
+        else:
+            cover_error = '封面请求失败：HTTP %s' % resp.http_code
+    except Exception as e:
+        cover_error = '%s: %s' % (type(e).__name__, e)
+
+    authors = getattr(album, 'authors', None) or []
+    tags = getattr(album, 'tags', None) or []
+
+    return jsonify(ok=True, album={
+        'id': str(album.album_id),
+        'title': album.name,
+        'author': '、'.join(authors) if authors else getattr(album, 'author', ''),
+        'page_count': int(getattr(album, 'page_count', 0) or 0),
+        'episodes': len(album.episode_list or []),
+        'tags': [str(x) for x in tags][:12],
+        'description': (getattr(album, 'description', '') or '').strip()[:600],
+        'pub_date': getattr(album, 'pub_date', ''),
+        'likes': getattr(album, 'likes', ''),
+        'views': getattr(album, 'views', ''),
+        'cover_url': cover_url,
+        'cover_base64': cover_b64,
+        'cover_error': cover_error,
+    })
 
 @app.route('/api/lookup')
 def api_lookup():
@@ -859,18 +1213,34 @@ def api_lookup():
 
 @app.route('/api/cover')
 def api_cover():
-    """把下载目录里 PDF 的第一页渲染成 PNG，直接作为图片返回（给「已下载」卡片当封面）。"""
+    """
+    把下载目录里 PDF 的第一页渲染成图片，作为「已下载」卡片的封面。
+
+    卡片上只显示 84×112，所以按固定宽度 260px 渲染成 JPEG（几十 KB），
+    首次渲染通常几毫秒到一两百毫秒，之后走内存缓存。
+    """
     filename = _safe_name(request.args.get('file'))
     if not filename:
         return jsonify(ok=False, error='文件名无效'), 400
 
-    path = os.path.join(get_pdf_dir(), filename)
+    # 收藏记录（不复制文件）可能指向收藏目录里的旧副本
+    base_dir = get_pdf_dir()
+    dir_opt = (request.args.get('dir') or '').strip()
+    if dir_opt:
+        allowed = {os.path.abspath(get_pdf_dir()).lower(),
+                   os.path.abspath(get_fav_dir()).lower()}
+        candidate = os.path.abspath(dir_opt)
+        if candidate.lower() in allowed:
+            base_dir = candidate
+
+    path = os.path.join(base_dir, filename)
     if not os.path.isfile(path):
         return jsonify(ok=False, error='文件不存在'), 404
 
-    cached = _cover_cache.get(filename)
+    cache_key = base_dir.lower() + '|' + filename
+    cached = _cover_cache.get(cache_key)
     if cached:
-        return Response(cached, mimetype='image/png',
+        return Response(cached, mimetype='image/jpeg',
                         headers={'Cache-Control': 'max-age=86400'})
 
     try:
@@ -879,15 +1249,18 @@ def api_cover():
             if doc.page_count <= 0:
                 return jsonify(ok=False, error='PDF 没有页面'), 400
             page = doc.load_page(0)
-            pix = page.get_pixmap(matrix=fitz.Matrix(0.26, 0.26))
-            data = pix.tobytes('png')
+            width = page.rect.width or 1
+            zoom = 260.0 / width            # 缩略图固定 260px 宽
+            zoom = max(0.05, min(zoom, 2.0))
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+            data = pix.tobytes('jpeg', jpg_quality=82)
     except Exception as e:
         return jsonify(ok=False, error='%s: %s' % (type(e).__name__, e)), 500
 
-    if len(_cover_cache) > 80:
+    if len(_cover_cache) > 120:
         _cover_cache.clear()
-    _cover_cache[filename] = data
-    return Response(data, mimetype='image/png',
+    _cover_cache[cache_key] = data
+    return Response(data, mimetype='image/jpeg',
                     headers={'Cache-Control': 'max-age=86400'})
 
 
@@ -1212,6 +1585,17 @@ def api_wipe():
 
 def main():
     _load_settings()
+
+    # 沿用上次的版本标识与域名列表，避免每次启动重新协商
+    try:
+        applied_version = _apply_cached_app_version()
+        if applied_version:
+            print('  版本标识 : %s（沿用上次）' % applied_version)
+        cached_domains = _apply_cached_domains()
+        if cached_domains:
+            print('  域名缓存 : %s' % ', '.join(cached_domains))
+    except Exception as e:
+        print('  缓存注入失败：%s' % e)
 
     # 打包运行时，option.yml 会先随程序分发，这里补一份到数据目录
     if not os.path.exists(OPTION_FILE):

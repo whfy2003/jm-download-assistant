@@ -37,6 +37,11 @@ _S = {
     'proxy_pass': None,  # 代理认证密码（可选）
     'proxy_only': None,  # 只对这些域名走代理（每行一个，留空=全部）
     'proxy_type': 'auto',  # auto / http / socks（OpenClash 的 mixed 端口两种都支持）
+    # 上次探测到的上游 APP_VERSION（jmcomic 的版本标识）。
+    # 存下来是为了下次启动直接注入，避免每次都重新协商一遍。
+    'app_version': '',
+    # 上次探测到的 API 域名列表。有值就先用它，后台再确认有没有更新。
+    'domains': [],
 }
 
 
@@ -65,6 +70,34 @@ def init(home: str,
 
 def is_ready() -> bool:
     return bool(_S['ready'])
+
+
+def app_version() -> str:
+    """上次记住的上游版本标识；空串表示还没探测过。"""
+    return (_S.get('app_version') or '').strip()
+
+
+def set_app_version(value: str) -> None:
+    """记住最新的上游版本标识（只在变化时写盘）。"""
+    value = (value or '').strip()
+    if not value or value == _S.get('app_version'):
+        return
+    _S['app_version'] = value
+    save()
+
+
+def domains() -> list:
+    """上次缓存下来的 API 域名列表（空列表表示还没有缓存）。"""
+    return list(_S.get('domains') or [])
+
+
+def set_domains(values) -> None:
+    """缓存最新的域名列表（只在内容变化时写盘）。"""
+    values = [str(x).strip() for x in (values or []) if str(x).strip()]
+    if not values or sorted(values) == sorted(_S.get('domains') or []):
+        return
+    _S['domains'] = values
+    save()
 
 
 def _require_ready():
@@ -118,6 +151,10 @@ def _load():
         _S['proxy_only'] = data['proxy_only'].strip()
     if isinstance(data.get('proxy_type'), str) and data['proxy_type'] in ('auto', 'http', 'socks'):
         _S['proxy_type'] = data['proxy_type']
+    if isinstance(data.get('app_version'), str) and data['app_version'].strip():
+        _S['app_version'] = data['app_version'].strip()
+    if isinstance(data.get('domains'), list):
+        _S['domains'] = [str(x).strip() for x in data['domains'] if str(x).strip()]
 
 
 def save():
@@ -135,6 +172,8 @@ def save():
         'proxy_pass': _S['proxy_pass'],
         'proxy_only': _S['proxy_only'],
         'proxy_type': _S['proxy_type'],
+        'app_version': _S['app_version'] or '',
+        'domains': list(_S.get('domains') or []),
     }
     tmp = path + '.tmp'
     try:

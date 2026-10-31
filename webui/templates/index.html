@@ -110,9 +110,10 @@
 
             <div class="field">
               <label for="album-id">编号（纯数字）</label>
-              <div class="row">
-                <input id="album-id" class="input" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：422869">
-                <button id="btn-download" class="btn btn-primary">下载</button>
+              <input id="album-id" class="input" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：422869">
+              <div class="row" style="margin-top:10px">
+                <button id="btn-preview" class="btn btn-outline grow">预览封面</button>
+                <button id="btn-download" class="btn btn-primary grow">开始下载</button>
               </div>
             </div>
 
@@ -163,9 +164,9 @@
             <div class="divider"></div>
 
             <div class="field">
-              <label for="dl-search-id">搜索下载记录（按编号）</label>
+              <label for="dl-search-id">搜索下载记录（编号 / 标题 / 作者 / 标签，支持中文）</label>
               <div class="row">
-                <input id="dl-search-id" class="input" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：422869">
+                <input id="dl-search-id" class="input" type="text" autocomplete="off" placeholder="例如：422869 或 少女">
                 <button id="dl-btn-search" class="btn btn-outline">搜索</button>
               </div>
               <div class="row">
@@ -191,7 +192,12 @@
             <div class="card-head">
               <h2>下载记录</h2>
               <div class="head-tools">
-                <span class="badge" id="dl-badge">全部记录</span>
+                <button class="btn btn-outline btn-sm" id="dl-sort" title="切换排序方式">切换为按点赞排序</button>
+                <button class="btn btn-outline btn-sm" id="dl-detail-refresh" title="为还没有详情的漫画抓取作者、标签、点赞数">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                    <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/>
+                  </svg>
+                  详情刷新</button>
                 <button class="btn btn-outline btn-sm" id="dl-refresh" title="重新读取日志">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
                     <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/>
@@ -211,7 +217,7 @@
       <section class="view hidden" id="view-favorites">
         <div class="page-head">
           <h1>收藏</h1>
-          <p>收藏夹目录 <code id="head-fav-dir">{{ fav_dir }}</code> · 收藏时会从下载目录复制一份 PDF 进来，并写入 <code>jm_fav_log.txt</code></p>
+          <p>收藏夹目录 <code id="head-fav-dir">{{ fav_dir }}</code> · 收藏时只在 <code>jm_fav_log.txt</code> 记一行文件名，<b>不复制 PDF</b>（文件仍留在下载目录）</p>
         </div>
 
         <div class="warn-banner hidden" id="fav-warning"></div>
@@ -222,9 +228,9 @@
             <div class="card-desc">在「下载」页点击记录左侧的星标即可收藏到这里。</div>
 
             <div class="field">
-              <label for="fav-search-id">搜索收藏记录（按编号）</label>
+              <label for="fav-search-id">搜索收藏记录（编号 / 标题 / 作者 / 标签，支持中文）</label>
               <div class="row">
-                <input id="fav-search-id" class="input" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：422869">
+                <input id="fav-search-id" class="input" type="text" inputmode="numeric" autocomplete="off" placeholder="例如：422869 或 少女">
                 <button id="fav-btn-search" class="btn btn-outline">搜索</button>
               </div>
               <div class="row">
@@ -249,7 +255,12 @@
             <div class="card-head">
               <h2>收藏记录</h2>
               <div class="head-tools">
-                <span class="badge" id="fav-badge">全部记录</span>
+                <button class="btn btn-outline btn-sm" id="fav-sort" title="切换排序方式">切换为按点赞排序</button>
+                <button class="btn btn-outline btn-sm" id="fav-detail-refresh" title="为还没有详情的漫画抓取作者、标签、点赞数">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                    <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/>
+                  </svg>
+                  详情刷新</button>
                 <button class="btn btn-outline btn-sm" id="fav-refresh" title="重新读取日志">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
                     <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4"/>
@@ -272,103 +283,107 @@
           <p>修改下载目录与收藏目录；保存时会自动把原目录里的内容迁移到新位置</p>
         </div>
 
-        <div class="grid">
-          <section class="card card-pad">
-            <div class="card-head"><h2>目录设置</h2></div>
-            <div class="card-desc">请填绝对路径，例如 <code>E:\漫画\JM</code></div>
+                <div class="settings-rows">
+          <div class="settings-row settings-row-2">
+              <section class="card card-pad">
+                          <div class="card-head">
+                            <h2>磁盘占用</h2>
+                            <span class="badge" id="disk-drive">—</span>
+                          </div>
+                          <div class="card-desc">橙色＝该目录占用 · 紫色＝同盘其它占用 · 灰色＝可用空间</div>
+                          <div id="disk-detail"></div>
+                          <button class="btn btn-outline btn-block" id="btn-disk-refresh" style="margin-top:16px">重新统计</button>
+                        </section>
 
-            <div class="field">
-              <label for="set-pdf">下载目录（PDF 成品 + jm_log.txt）</label>
-              <input id="set-pdf" class="input" type="text" spellcheck="false" autocomplete="off">
-            </div>
+              <section class="card card-pad">
+                          <div class="card-head">
+                            <h2>AVS 登录（可选）</h2>
+                            <span class="badge" id="avs-state">未配置</span>
+                          </div>
+                          <div class="card-desc">少部分内容需要登录后才看得到。填上浏览器里登录后的 <code>AVS</code>，就能下载到这些内容。</div>
 
-            <div class="field" style="margin-top:14px">
-              <label for="set-fav">收藏目录（收藏副本 + jm_fav_log.txt）</label>
-              <input id="set-fav" class="input" type="text" spellcheck="false" autocomplete="off">
-            </div>
+                          <div class="field">
+                            <label for="set-avs">AVS 值</label>
+                            <input id="set-avs" class="input" type="password" spellcheck="false" autocomplete="off"
+                                   placeholder="留空 = 不登录，只下载公开内容">
+                          </div>
 
-            <button id="btn-save-settings" class="btn btn-primary btn-block" style="margin-top:18px">保存并迁移内容</button>
-            <button id="btn-reset-settings" class="btn btn-ghost btn-block" style="margin-top:8px">恢复默认路径</button>
+                          <div class="row" style="margin-top:12px">
+                            <button id="btn-save-avs" class="btn btn-outline grow">保存 AVS</button>
+                            <button id="btn-clear-avs" class="btn btn-ghost">清空</button>
+                          </div>
 
-            <p class="hint" style="margin-top:14px">
-              保存后会把原目录里的<b>所有文件与子文件夹</b>移动到新目录，并同步切换日志位置。<br>
-              同一磁盘内是瞬时改名；跨磁盘则先复制再删除，耗时取决于文件体积。<br>
-              新目录中若已存在同名文件，会跳过该文件（不覆盖）。
-            </p>
-          </section>
+                          <p class="hint" style="margin-top:14px">
+                            获取方式：浏览器登录禁漫 → 按 <b>F12</b> → <b>Application / 应用</b> → <b>Cookies</b> →
+                            找到名为 <code>AVS</code> 的一项，复制它的值粘到上面。<br>
+                            AVS 相当于登录凭证，只保存在本机的 <code>settings.json</code>，不会上传到任何地方。<br>
+                            留空即按未登录状态下载，功能与之前完全一致。
+                          </p>
+                        </section>
+          </div>
 
-          <section class="card card-pad">
-            <div class="card-head">
-              <h2>磁盘占用</h2>
-              <span class="badge" id="disk-drive">—</span>
-            </div>
-            <div class="card-desc">橙色＝该目录占用 · 紫色＝同盘其它占用 · 灰色＝可用空间</div>
-            <div id="disk-detail"></div>
-            <button class="btn btn-outline btn-block" id="btn-disk-refresh" style="margin-top:16px">重新统计</button>
-          </section>
+          <div class="settings-row settings-row-3">
+              <section class="card card-pad">
+                          <div class="card-head"><h2>目录设置</h2></div>
+                          <div class="card-desc">请填绝对路径，例如 <code>E:\漫画\JM</code></div>
 
-          <section class="card card-pad">
-            <div class="card-head">
-              <h2>清除所有下载数据</h2>
-              <span class="badge badge-danger">危险操作</span>
-            </div>
-            <div class="card-desc">删除下载目录与收藏目录里的全部漫画和日志，并清空图片工作区。</div>
+                          <div class="field">
+                            <label for="set-pdf">下载目录（PDF 成品 + jm_log.txt）</label>
+                            <input id="set-pdf" class="input" type="text" spellcheck="false" autocomplete="off">
+                          </div>
 
-            <button id="btn-wipe" class="btn btn-danger btn-block">清除所有下载数据</button>
+                          <div class="field" style="margin-top:14px">
+                            <label for="set-fav">收藏目录（收藏副本 + jm_fav_log.txt）</label>
+                            <input id="set-fav" class="input" type="text" spellcheck="false" autocomplete="off">
+                          </div>
 
-            <p class="hint" style="margin-top:14px">
-              点一下会先弹出两次确认：<br>
-              第一次说明「删除后无法找回」，第二次再问「确定删除」。<br>
-              清空后可以照常继续下载，不影响程序本身。
-            </p>
-          </section>
+                          <button id="btn-save-settings" class="btn btn-primary btn-block" style="margin-top:18px">保存并迁移内容</button>
+                          <button id="btn-reset-settings" class="btn btn-ghost btn-block" style="margin-top:8px">恢复默认路径</button>
 
-          <section class="card card-pad">
-            <div class="card-head">
-              <h2>AVS 登录（可选）</h2>
-              <span class="badge" id="avs-state">未配置</span>
-            </div>
-            <div class="card-desc">少部分内容需要登录后才看得到。填上浏览器里登录后的 <code>AVS</code>，就能下载到这些内容。</div>
+                          <p class="hint" style="margin-top:14px">
+                            保存后会把原目录里的<b>所有文件与子文件夹</b>移动到新目录，并同步切换日志位置。<br>
+                            同一磁盘内是瞬时改名；跨磁盘则先复制再删除，耗时取决于文件体积。<br>
+                            新目录中若已存在同名文件，会跳过该文件（不覆盖）。
+                          </p>
+                        </section>
 
-            <div class="field">
-              <label for="set-avs">AVS 值</label>
-              <input id="set-avs" class="input" type="password" spellcheck="false" autocomplete="off"
-                     placeholder="留空 = 不登录，只下载公开内容">
-            </div>
+              <section class="card card-pad">
+                          <div class="card-head">
+                            <h2>清除所有下载数据</h2>
+                            <span class="badge badge-danger">危险操作</span>
+                          </div>
+                          <div class="card-desc">删除下载目录与收藏目录里的全部漫画和日志，并清空图片工作区。</div>
 
-            <div class="row" style="margin-top:12px">
-              <button id="btn-save-avs" class="btn btn-outline grow">保存 AVS</button>
-              <button id="btn-clear-avs" class="btn btn-ghost">清空</button>
-            </div>
+                          <button id="btn-wipe" class="btn btn-danger btn-block">清除所有下载数据</button>
 
-            <p class="hint" style="margin-top:14px">
-              获取方式：浏览器登录禁漫 → 按 <b>F12</b> → <b>Application / 应用</b> → <b>Cookies</b> →
-              找到名为 <code>AVS</code> 的一项，复制它的值粘到上面。<br>
-              AVS 相当于登录凭证，只保存在本机的 <code>settings.json</code>，不会上传到任何地方。<br>
-              留空即按未登录状态下载，功能与之前完全一致。
-            </p>
-          </section>
+                          <p class="hint" style="margin-top:14px">
+                            点一下会先弹出两次确认：<br>
+                            第一次说明「删除后无法找回」，第二次再问「确定删除」。<br>
+                            清空后可以照常继续下载，不影响程序本身。
+                          </p>
+                        </section>
 
-          <section class="card card-pad">
-            <div class="card-head">
-              <h2>关于与更新</h2>
-              <span class="badge" id="app-version">v{{ version }}</span>
-            </div>
-            <div class="card-desc">新版本会发布在 GitHub 项目主页，可在这里一键比对版本。</div>
+              <section class="card card-pad">
+                          <div class="card-head">
+                            <h2>关于与更新</h2>
+                            <span class="badge" id="app-version">v{{ version }}</span>
+                          </div>
+                          <div class="card-desc">新版本会发布在 GitHub 项目主页，可在这里一键比对版本。</div>
 
-            <div class="row">
-              <button id="btn-open-project" class="btn btn-outline grow">打开项目主页</button>
-              <button id="btn-check-update" class="btn btn-primary grow">检查更新</button>
-            </div>
+                          <div class="row">
+                            <button id="btn-open-project" class="btn btn-outline grow">打开项目主页</button>
+                            <button id="btn-check-update" class="btn btn-primary grow">检查更新</button>
+                          </div>
 
-            <div id="update-result" class="update-result hidden"></div>
+                          <div id="update-result" class="update-result hidden"></div>
 
-            <p class="hint" style="margin-top:14px">
-              检查更新只读取最新版本号，<b>不会</b>自动下载或改动任何文件。<br>
-              升级方式：下载新版安装程序直接运行，安装向导会认出已安装的版本，
-              只替换程序文件，<b>漫画、收藏、目录设置全部保留</b>。
-            </p>
-          </section>
+                          <p class="hint" style="margin-top:14px">
+                            检查更新只读取最新版本号，<b>不会</b>自动下载或改动任何文件。<br>
+                            升级方式：下载新版安装程序直接运行，安装向导会认出已安装的版本，
+                            只替换程序文件，<b>漫画、收藏、目录设置全部保留</b>。
+                          </p>
+                        </section>
+          </div>
         </div>
       </section>
     </div>
@@ -387,6 +402,49 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
+
+<!-- 全部标签 -->
+<div id="tag-modal" class="modal hidden">
+  <div class="modal-box" style="width:min(440px,100%)">
+    <div class="modal-head">
+      <h3>全部标签</h3>
+      <button id="tag-close" class="icon-btn" title="关闭">✕</button>
+    </div>
+    <div class="modal-body" style="padding:18px 20px">
+      <div class="pv-tags" id="tag-all-list"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="tag-ok" class="btn btn-primary">知道了</button>
+    </div>
+  </div>
+</div>
+
+<!-- 预览封面 -->
+<div id="preview-modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3 id="pv-title">预览</h3>
+      <button id="pv-close" class="icon-btn" title="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="pv-cover-wrap">
+        <img id="pv-cover" alt="封面">
+        <div id="pv-cover-fallback" class="pv-cover-fallback">载入中…</div>
+      </div>
+      <div class="pv-info">
+        <div class="pv-id" id="pv-id"></div>
+        <div class="pv-name" id="pv-name"></div>
+        <div class="pv-meta" id="pv-meta"></div>
+        <div class="pv-tags" id="pv-tags"></div>
+        <div class="pv-desc" id="pv-desc"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button id="pv-cancel" class="btn btn-ghost">取消</button>
+      <button id="pv-download" class="btn btn-primary">开始下载</button>
+    </div>
+  </div>
+</div>
 
 <script>
   window.JM_PATHS = {

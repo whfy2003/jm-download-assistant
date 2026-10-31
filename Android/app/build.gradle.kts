@@ -16,8 +16,8 @@ android {
         applicationId = "com.jmcomic.android"
         minSdk = 24
         targetSdk = 37
-        versionCode = 14
-        versionName = "1.02"
+        versionCode = 15
+        versionName = "1.0.3"
 
         // Chaquopy 的 Python 解释器是原生库，必须显式声明 ABI
         ndk {

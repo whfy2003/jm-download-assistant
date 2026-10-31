@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.HapticFeedbackConstants;
@@ -17,6 +18,10 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import android.provider.DocumentsContract;
+
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatDelegate;
@@ -36,6 +41,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -58,6 +64,7 @@ public class SettingsFragment extends Fragment {
             "https://github.com/whfy2003/jm-download-assistant";
 
     private TextView tvPdfDir;
+    private ActivityResultLauncher<Uri> pickPdfDir;
     private TextView tvFavDir;
     private TextView tvWorkDir;
     private TextView tvDiskPdf;
@@ -144,7 +151,7 @@ public class SettingsFragment extends Fragment {
         tilCookies = view.findViewById(R.id.til_cookies);
         switchDark = view.findViewById(R.id.switch_dark);
 
-        tvAbout.setText("JM 下载助手（Android）V1.02\n"
+        tvAbout.setText("JM 下载助手（Android）V1.0.3\n"
                 + "下载核心：JMComic-Crawler-Python（MIT · hect0x7）\n"
                 + "Python 运行时：Chaquopy 17.1 / Python 3.13\n"
                 + "本项目仅做界面与流程封装，仅供个人学习与技术研究使用。\n"
@@ -172,6 +179,8 @@ public class SettingsFragment extends Fragment {
         view.findViewById(R.id.btn_diagnose).setOnClickListener(v ->
                 Py.call("diagnose", json -> showText("运行环境自检", pretty(json))));
         view.findViewById(R.id.btn_wipe).setOnClickListener(v -> confirmWipeFirst());
+
+        view.findViewById(R.id.btn_pick_pdf).setOnClickListener(v -> showPdfDirDialog());
 
         // 全局圆角
         Ui.apply(view);
@@ -611,6 +620,72 @@ public class SettingsFragment extends Fragment {
         super.onResume();
         load(!loadedOnce);
         loadedOnce = true;
+    }
+
+
+    // ------------------------------------------------------------------ //
+    // 更改下载目录（手动输入 / 常用位置）
+    // ------------------------------------------------------------------ //
+    private void showPdfDirDialog() {
+        View content = getLayoutInflater().inflate(R.layout.dialog_pdf_dir, null);
+        TextInputEditText input = content.findViewById(R.id.et_pdf_dir);
+        input.setText(info == null ? "" : info.pdfDir);
+
+        final String base = Environment.getExternalStorageDirectory().getAbsolutePath();
+        content.findViewById(R.id.btn_preset_download).setOnClickListener(v ->
+                input.setText(base + "/Download/JM"));
+        content.findViewById(R.id.btn_preset_documents).setOnClickListener(v ->
+                input.setText(base + "/Documents/JM"));
+
+        Ui.apply(content);
+
+        new MaterialAlertDialogBuilder(requireContext())
+                .setTitle("更改下载目录")
+                .setView(content)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("迁移并保存", (dialog, which) ->
+                        applyPdfDir(input.getText() == null ? "" : input.getText().toString().trim()))
+                .show();
+    }
+
+    private void applyPdfDir(String path) {
+        if (path.isEmpty()) {
+            toast("请输入完整路径");
+            return;
+        }
+        File dir = new File(path);
+        if (!dir.isAbsolute()) {
+            toast("必须是绝对路径，例如 /storage/emulated/0/Download/JM");
+            return;
+        }
+        if (!dir.exists() && !dir.mkdirs()) {
+            toast("无法创建这个目录，请检查路径或存储权限");
+            return;
+        }
+
+        File probe = new File(dir, ".jm_write_probe");
+        try {
+            FileOutputStream out = new FileOutputStream(probe);
+            out.write(1);
+            out.close();
+            probe.delete();
+        } catch (Exception e) {
+            toast("这个目录不可写。Android 11+ 写公共目录需要授予「所有文件访问权限」");
+            return;
+        }
+
+        toast("正在迁移，请稍候…");
+        Py.call("update_settings", json -> {
+            if (!isAdded()) {
+                return;
+            }
+            if (json.optBoolean("ok", false)) {
+                toast("下载目录已更新");
+                load();
+            } else {
+                toast(json.optString("error", "更新失败"));
+            }
+        }, path, "");
     }
 
     private void load() {

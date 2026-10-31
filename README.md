@@ -93,7 +93,7 @@
 
 **升级到新版本**：**不用先卸载**，直接下载新版安装程序运行即可。
 
-安装窗口会提示「检测到已安装 v1.0，将更新到 v1.1」，三个路径自动填好并锁定；
+安装窗口会提示「检测到已安装 v1.0，将更新到 v1.0.2」，三个路径自动填好并锁定；
 点「立即更新」后只替换程序文件（`JM下载助手.exe` 与 `_internal`），
 **下载目录、收藏目录、AVS 设置、全部漫画与记录原样保留**。
 如果想换位置，点窗口下方的「改为全新安装」即可解锁路径输入。
@@ -122,7 +122,26 @@ start-jm-web.cmd
 
 ## 更新记录
 
-### v1.2
+### v1.0.3（当前）
+
+**详情日志 / 中文搜索 / 排序与标签交互**
+
+| 类型 | 内容 |
+| --- | --- |
+| 新增 | **下载页新布局**：编号输入框独占一行，下方并排「预览封面 / 开始下载」 |
+| 新增 | **封面预览弹窗**：封面大图 + 编号、标题、作者、页数、章节、点赞、浏览、标签、简介，底部可直接开始下载 |
+| 新增 | **漫画详情日志**：每部漫画对应 `下载目录/日志/<编号>.txt`，记录编号、标题、作者、点赞、浏览、页数、标签、更新时间 |
+| 新增 | **详情刷新**：后台逐部补抓缺失详情并写入日志，每部之间随机等待 0.1~2 秒，避免给上游造成压力；界面实时显示进度 |
+| 新增 | **中文搜索**：搜索框支持编号 / 标题 / 作者 / 标签，标签按子串匹配（输入「少女」可命中「少女漫画」） |
+| 新增 | **排序切换**：记录卡片头部可在「按时间排序 / 按点赞排序」之间切换，按钮显示的是「点击后会变成什么」 |
+| 新增 | **记录项详情**：每条记录展示作者、标签胶囊与点赞数 |
+| 新增 | **标签折叠与预览**：每部最多显示 4 个标签，超出部分折叠为「查看更多」。悬停时在光标正上方弹出全部标签浮层（自动避让窗口边缘）；点击弹出与预览封面相同的卡片 |
+| 新增 | **已下载预览的「打开」模式**：从记录列表打开的卡片，底部按钮为「关闭 / 打开」，可直接用系统默认程序打开 PDF |
+| 改进 | **版本标识持久化 + 域名缓存**：写入 `settings.json` 的 `app_version` / `domains`，减少每次启动的重复协商 |
+| 调整 | 记录卡片头部移除「全部记录」徽标，只保留排序、详情刷新与刷新数据；「详情刷新」补上与「刷新数据」一致的箭头图标 |
+| 修复 | 预览弹窗背景使用了不存在的 CSS 变量导致半透明 |
+
+### v1.0.2
 
 | 类型 | 内容 |
 | --- | --- |
@@ -145,18 +164,6 @@ start-jm-web.cmd
 
 ---
 
-## Android 客户端（Android/）
-
-`Android/` 是同一套下载核心的 Android 移植版：用 Chaquopy 在进程内运行 Python
-（`jmcomic` + `jmcore`），界面用 Java（Material 3）重写，产出 APK。
-它和 Windows 端共享同一套 Python 业务逻辑，不跑 Flask、不起本地端口。
-
-- 构建：`cd Android` 后执行 `.\gradlew.bat :app:assembleRelease`（细节见 `Android/README.md`）
-- 签名：`keystore/` 与 `local.properties` 不随仓库分发，模板见 `Android/local.properties.example`
-- 发布包：Releases 里的 `JM下载助手-Android-v1.02.apk`
-
----
-
 ## 目录结构
 
 ```
@@ -167,7 +174,6 @@ start-jm-web.cmd
 ├── LICENSE
 ├── .gitignore
 │
-├── Android/                   Android 客户端（Chaquopy + Java，产出 APK）
 ├── webui/                     网页端（本项目的核心代码）
 │   ├── app.py                 后端：Flask 路由、记录解析、目录迁移、磁盘占用、下载进度、AVS、检查更新
 │   ├── launcher.py            启动器：首次运行向导、启动服务、卸载程序
@@ -223,7 +229,7 @@ start-jm-web.cmd
 
 ## 致谢
 
-- **[JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python)** —— 本项目的全部下载能力来自该项目，感谢作者 @hect0x7
+- **[JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python)** —— 本项目的全部下载能力来自该项目，感谢作者 hect0x7
 - [jm-view-server](https://github.com/hect0x7/jm-view-server) —— 界面设计参考了它的设计令牌
 - [curl-cffi](https://github.com/lexiforest/curl_cffi) / [Flask](https://flask.palletsprojects.com/) / [img2pdf](https://github.com/josch/img2pdf) / [PyInstaller](https://pyinstaller.org/)
 

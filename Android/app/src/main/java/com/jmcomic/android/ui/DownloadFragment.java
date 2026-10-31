@@ -284,8 +284,21 @@ public class DownloadFragment extends Fragment {
             showAlbumCard(null);
             return;
         }
-        lookupRunnable = () -> lookupAlbum(id);
+        lookupRunnable = () -> {
+            lookupAlbum(id);
+            prefetchCover(id);
+        };
         handler.postDelayed(lookupRunnable, 350);
+    }
+
+    /**
+     * 输入编号后顺手把封面预取到 Python 端的内存缓存里，
+     * 点「预览封面」时就能直接从缓存取图，不必再等一次图片下载。
+     */
+    private void prefetchCover(String id) {
+        Py.call("prefetch_cover", json -> {
+            // 预取失败无所谓，点预览时还会再试一次
+        }, id);
     }
 
     private void lookupAlbum(String id) {

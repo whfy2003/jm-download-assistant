@@ -34,7 +34,7 @@ def default_install_dir():
 
 
 UNINSTALL_KEY = r'Software\Microsoft\Windows\CurrentVersion\Uninstall\JM下载助手'
-APP_VERSION = '1.1'
+APP_VERSION = '1.0.3'
 
 # 升级时保留的文件：配置与用户数据都不能动
 PRESERVE_NAMES = {'settings.json', 'jm_log.txt', 'jm_fav_log.txt'}

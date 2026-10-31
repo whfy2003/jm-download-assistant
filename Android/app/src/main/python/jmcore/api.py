@@ -15,6 +15,7 @@ import json
 import os
 import platform
 import sys
+import threading
 import traceback
 
 import jmcore.paths as paths
@@ -52,6 +53,116 @@ def _safe(func):
 # --------------------------------------------------------------------------- #
 # 初始化
 # --------------------------------------------------------------------------- #
+def _apply_cached_domains() -> list:
+    """
+    把上次缓存的 API 域名列表注入 jmcomic。
+
+    注入后 after_init() 里就不会再阻塞式地请求域名服务器；
+    真正的「有没有更新」交给 _refresh_domains_async 在后台确认。
+    """
+    cached = paths.domains()
+    if not cached:
+        return []
+    try:
+        from jmcomic import JmModuleConfig
+        JmModuleConfig.DOMAIN_API_LIST = list(cached)
+        JmModuleConfig.DOMAIN_API_UPDATED_LIST = list(cached)
+        return cached
+    except Exception:
+        return []
+
+
+def _refresh_domains_async(cached) -> None:
+    """后台确认域名有没有变；没变就继续沿用缓存，变了就更新并落盘。"""
+
+    def work():
+        try:
+            import requests
+            from jmcomic import JmCryptoTool, JmMagicConstants, JmModuleConfig
+        except Exception:
+            return
+
+        for url in JmModuleConfig.API_URL_DOMAIN_SERVER_LIST:
+            try:
+                resp = requests.get(url, timeout=12)
+                text = resp.text or ''
+                while text and not text[0].isascii():
+                    text = text[1:]
+                payload = json.loads(JmCryptoTool.decode_resp_data(
+                    text, '', JmMagicConstants.API_DOMAIN_SERVER_SECRET))
+                servers = payload.get('Server')
+            except Exception:
+                continue
+
+            if not servers:
+                continue
+
+            servers = [str(x) for x in servers]
+            if sorted(servers) == sorted(cached or []):
+                task.bus().push('域名列表无变化，继续沿用缓存（%d 个）' % len(servers))
+                return
+
+            try:
+                JmModuleConfig.DOMAIN_API_LIST = list(servers)
+                JmModuleConfig.DOMAIN_API_UPDATED_LIST = list(servers)
+            except Exception:
+                pass
+            paths.set_domains(servers)
+            task.bus().push('域名列表已更新：%s' % servers)
+            return
+
+        task.bus().push('域名检测未成功，继续沿用缓存')
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _apply_cached_app_version() -> str:
+    """
+    把上次记住的上游版本标识注入 jmcomic 的内存常量。
+
+    jmcomic 的 APP_VERSION 只是请求头里 tokenparam 的一个字段，
+    检测到更高版本时只改内存（进程退出就丢）。这里在启动时先把上次的值填回去，
+    这样服务端返回的版本和本地一致，就不会再走一遍
+    「change APP_VERSION from [x] to [y]」的协商。
+    """
+    cached = paths.app_version()
+    if not cached:
+        return ''
+    try:
+        import jmcomic
+        current = jmcomic.JmMagicConstants.APP_VERSION
+        if current and jmcomic.JmcomicText.compare_versions(cached, current) <= 0:
+            return current          # 缓存不比内置新，用内置的就行
+        jmcomic.JmMagicConstants.APP_VERSION = cached
+        return cached
+    except Exception:
+        return ''
+
+
+def _sync_app_version() -> str:
+    """jmcomic 在内存里换过版本后调用：把新值写回本地，下次启动直接用它。"""
+    try:
+        import jmcomic
+        current = jmcomic.JmMagicConstants.APP_VERSION
+        if current and current != paths.app_version():
+            paths.set_app_version(current)
+        return current or ''
+    except Exception:
+        return ''
+
+
+def _sync_domains() -> list:
+    """jmcomic 探测到新域名后，把结果写回本地缓存（无变化时不写盘）。"""
+    try:
+        from jmcomic import JmModuleConfig
+        updated = JmModuleConfig.DOMAIN_API_UPDATED_LIST or []
+        if updated:
+            paths.set_domains(updated)
+        return list(updated)
+    except Exception:
+        return []
+
+
 @_safe
 def init(home: str, pdf_dir: str = '', fav_dir: str = '', work_dir: str = '') -> dict:
     """启动时调用一次（幂等）。"""
@@ -60,6 +171,17 @@ def init(home: str, pdf_dir: str = '', fav_dir: str = '', work_dir: str = '') ->
     task.bus().clear()
 
     info = paths.init(home, pdf_dir or None, fav_dir or None, work_dir or None)
+
+    # 注入上次记住的版本标识，省掉每次启动的版本协商
+    applied_version = _apply_cached_app_version()
+    if applied_version:
+        task.bus().push('版本标识：沿用上次的 %s（无需重新协商）' % applied_version)
+
+    # 注入上次缓存的域名列表（首次下载不用等域名探测），再后台确认有没有更新
+    cached_domains = _apply_cached_domains()
+    if cached_domains:
+        task.bus().push('域名：先用上次缓存的 %d 个，后台确认是否有更新' % len(cached_domains))
+        _refresh_domains_async(cached_domains)
 
     transport = {}
     try:
@@ -70,8 +192,10 @@ def init(home: str, pdf_dir: str = '', fav_dir: str = '', work_dir: str = '') ->
         transport['ok'] = False
         transport['error'] = '%s: %s' % (type(e).__name__, e)
 
-    _init_info.update({'dirs': info, 'transport': transport})
-    return {'ok': True, 'version': VERSION, 'dirs': info, 'transport': transport}
+    _init_info.update({'dirs': info, 'transport': transport,
+                       'app_version': applied_version})
+    return {'ok': True, 'version': VERSION, 'dirs': info, 'transport': transport,
+            'app_version': applied_version}
 
 
 @_safe
@@ -127,7 +251,67 @@ def _webp_supported() -> str:
 # --------------------------------------------------------------------------- #
 @_safe
 def start_download(album_id) -> dict:
-    return task.start(album_id)
+    _sync_app_version()          # 上一次可能已经把版本协商过了，先落盘
+    result = task.start(album_id)
+    _sync_app_version()
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# 封面缓存（只放内存，应用退出即清空）
+# --------------------------------------------------------------------------- #
+_cover_cache = {}
+_COVER_CACHE_MAX = 12
+
+
+def _fetch_cover_b64(album_id: str):
+    """下载封面并返回 (base64, 错误信息)。"""
+    import base64
+    import jmcomic
+
+    from jmcore import imagefix
+    imagefix.install()
+
+    try:
+        option = task.build_option()
+        client = option.build_jm_client()
+        url = jmcomic.JmcomicText.get_album_cover_url(album_id)
+        resp = client.get_jm_image(url)
+        if resp.is_success:
+            return base64.b64encode(resp.content).decode('ascii'), ''
+        return '', '封面请求失败：HTTP %s' % resp.http_code
+    except Exception as e:
+        return '', '%s: %s' % (type(e).__name__, e)
+
+
+def _cover_cache_put(album_id: str, data: str) -> None:
+    if not data:
+        return
+    if len(_cover_cache) >= _COVER_CACHE_MAX:
+        _cover_cache.pop(next(iter(_cover_cache)))
+    _cover_cache[album_id] = data
+
+
+@_safe
+def prefetch_cover(album_id) -> dict:
+    """
+    输入编号时后台预取封面，存进内存缓存（跟随进程生命周期，退出即释放）。
+
+    点「预览封面」时 preview_album 会先查这里，命中就不用再等一次图片下载。
+    """
+    album_id = str(album_id or '').strip()
+    if not album_id.isdigit():
+        return {'ok': False, 'error': '编号必须是纯数字'}
+    if album_id in _cover_cache:
+        return {'ok': True, 'cached': True}
+
+    data, error = _fetch_cover_b64(album_id)
+    if not data:
+        return {'ok': False, 'error': error}
+
+    _cover_cache_put(album_id, data)
+    task.bus().push('封面已预取缓存：%s' % album_id)
+    return {'ok': True, 'cached': False}
 
 
 @_safe
@@ -136,6 +320,7 @@ def preview_album(album_id) -> dict:
 
     封面由上游的 get_album_cover_url() 拼出图片地址，再走同一个 client 下载，
     这样能复用域名重试与 cookie；返回 base64 交给 Java 解码显示。
+    如果输入时已经预取过封面，这里直接从内存缓存取，省掉一次图片下载。
     """
     import base64
 
@@ -158,15 +343,27 @@ def preview_album(album_id) -> dict:
     cover_b64 = ''
     cover_url = ''
     cover_error = ''
+
     try:
         cover_url = jmcomic.JmcomicText.get_album_cover_url(album_id)
-        resp = client.get_jm_image(cover_url)
-        if resp.is_success:
-            cover_b64 = base64.b64encode(resp.content).decode('ascii')
-        else:
-            cover_error = '封面请求失败：HTTP %s' % resp.http_code
     except Exception as e:
         cover_error = '%s: %s' % (type(e).__name__, e)
+
+    # 先看预取缓存
+    cover_b64 = _cover_cache.get(album_id, '')
+    if cover_b64:
+        cover_error = ''
+        task.bus().push('封面命中缓存：%s（跳过下载）' % album_id)
+    elif cover_url:
+        try:
+            resp = client.get_jm_image(cover_url)
+            if resp.is_success:
+                cover_b64 = base64.b64encode(resp.content).decode('ascii')
+                _cover_cache_put(album_id, cover_b64)
+            else:
+                cover_error = '封面请求失败：HTTP %s' % resp.http_code
+        except Exception as e:
+            cover_error = '%s: %s' % (type(e).__name__, e)
 
     authors = getattr(album, 'authors', None) or []
     tags = getattr(album, 'tags', None) or []
@@ -197,6 +394,9 @@ def state(log_limit: int = 60) -> dict:
     # 注意：payload 里的 'ok' 是「任务结果」（None/True/False），
     # 不能被接口成功标志覆盖，否则界面永远显示"已完成"。
     payload['api_ok'] = True
+    # 任务里如果协商出了新的版本标识 / 新域名，跟着落盘
+    payload['app_version'] = _sync_app_version()
+    payload['domains'] = _sync_domains()
     return payload
 
 

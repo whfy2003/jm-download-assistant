@@ -123,6 +123,7 @@
                     android:text="—"
                     android:textIsSelectable="true" />
 
+
                 <TextView
                     style="@style/Text.Caption"
                     android:layout_width="match_parent"
@@ -152,6 +153,14 @@
                     android:layout_height="wrap_content"
                     android:text="—"
                     android:textIsSelectable="true" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_pick_pdf"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/btn_pick_pdf_dir" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
