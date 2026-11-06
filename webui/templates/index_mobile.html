@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#5b5bd6">
+  <title>JM 下载助手</title>
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('jm-theme');
+        var q = new URLSearchParams(location.search).get('theme');
+        if (q === 'light' || q === 'dark') saved = q;
+        var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.setAttribute('data-theme', saved || (sysDark ? 'dark' : 'light'));
+      } catch (e) { }
+    })();
+  </script>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='mobile.css') }}">
+</head>
+<body class="m-body">
+<div class="m-app">
+
+  <!-- 顶部标题栏 -->
+  <header class="m-top">
+    <div class="m-brand"><span class="m-logo">JM</span><b>下载助手</b></div>
+    <button class="btn btn-outline btn-icon" id="btn-theme" title="切换浅色 / 深色" aria-label="切换主题">
+      <svg id="theme-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+      </svg>
+    </button>
+  </header>
+
+  <main class="m-main">
+
+    <!-- ================= 下载 ================= -->
+    <section class="view" id="view-download">
+
+      <div class="m-dlbox">
+        <div class="m-idrow">
+          <input id="album-id" class="input" type="text" inputmode="numeric" autocomplete="off" placeholder="输入编号，例如 422869">
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button id="btn-preview" class="btn btn-outline grow">预览封面</button>
+          <button id="btn-download" class="btn btn-primary grow">开始下载</button>
+        </div>
+
+        <div class="m-status">
+          <span class="status">
+            <span id="status-text" class="badge">空闲</span>
+            <span id="spinner" class="spinner hidden" aria-hidden="true"></span>
+          </span>
+          <span id="progress-chapter" class="m-dim"></span>
+        </div>
+
+        <div class="progress-box" id="progress-box">
+          <div class="progress-head">
+            <span id="progress-phase">准备就绪</span>
+            <span id="progress-pct">0%</span>
+          </div>
+          <div class="progress-track">
+            <span class="progress-fill" id="progress-fill"></span>
+          </div>
+          <div class="progress-meta">
+            <span id="progress-count">0 / 0 张</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 输入编号命中下载记录时出现 -->
+      <div class="album-hit hidden" id="album-hit">
+        <div class="album-hit-head">
+          <span class="badge badge-success" id="album-hit-badge">已下载</span>
+          <span class="album-hit-time" id="album-hit-time"></span>
+        </div>
+        <div class="album-hit-body">
+          <div class="album-cover-wrap">
+            <img id="album-hit-cover" class="album-cover" alt="封面">
+            <div class="album-cover-fallback" id="album-hit-cover-fallback">JM</div>
+          </div>
+          <div class="album-hit-info">
+            <div class="album-hit-id" id="album-hit-id"></div>
+            <div class="album-hit-name" id="album-hit-name"></div>
+            <div class="album-hit-actions">
+              <button class="btn btn-outline btn-sm" id="btn-open-album">打开这本</button>
+              <button class="btn btn-ghost btn-sm" id="btn-redownload">重新下载</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 搜索 + 记录 -->
+      <div class="m-searchbar">
+        <input id="dl-search-id" class="input" type="text" autocomplete="off" placeholder="搜索标题 / 作者 / 标签">
+        <button id="dl-btn-search" class="btn btn-outline">搜索</button>
+      </div>
+      <div class="m-quickrow">
+        <button id="dl-btn-show-all" class="btn btn-ghost grow">显示全部</button>
+        <button id="dl-btn-search-all" class="btn btn-ghost grow">搜索全部</button>
+      </div>
+
+      <div class="m-listhead">
+        <span id="dl-count" class="m-count"></span>
+        <div class="m-tools">
+          <button id="dl-sort" class="btn btn-ghost btn-sm" title="切换排序方式">按点赞</button>
+          <button id="dl-detail-refresh" class="btn btn-ghost btn-sm">详情</button>
+          <button id="dl-refresh" class="btn btn-ghost btn-sm">刷新</button>
+        </div>
+      </div>
+
+      <div id="dl-records" class="records m-records"></div>
+
+      <details class="m-more">
+        <summary>更多</summary>
+        <details class="runtime">
+          <summary>运行日志</summary>
+          <pre id="runtime-logs" class="runtime-logs">（暂无）</pre>
+        </details>
+        <button id="btn-open-folder" class="btn btn-ghost btn-block" style="margin-top:10px">打开下载文件夹</button>
+      </details>
+    </section>
+
+    <!-- ================= 收藏 ================= -->
+    <section class="view hidden" id="view-favorites">
+      <div class="m-searchbar" style="margin-top:0">
+        <input id="fav-search-id" class="input" type="text" autocomplete="off" placeholder="搜索标题 / 作者 / 标签">
+        <button id="fav-btn-search" class="btn btn-outline">搜索</button>
+      </div>
+      <div class="m-quickrow">
+        <button id="fav-btn-show-all" class="btn btn-ghost grow">显示全部</button>
+        <button id="fav-btn-search-all" class="btn btn-ghost grow">搜索全部</button>
+      </div>
+
+      <div class="warn-banner hidden" id="fav-warning"></div>
+
+      <div class="m-listhead">
+        <span id="fav-count" class="m-count"></span>
+        <div class="m-tools">
+          <button id="fav-sort" class="btn btn-ghost btn-sm" title="切换排序方式">按点赞</button>
+          <button id="fav-detail-refresh" class="btn btn-ghost btn-sm">详情</button>
+          <button id="fav-refresh" class="btn btn-ghost btn-sm">刷新</button>
+        </div>
+      </div>
+
+      <div id="fav-records" class="records m-records"></div>
+
+      <details class="m-more">
+        <summary>更多</summary>
+        <div class="m-kv"><b>收藏目录</b><code id="fav-dir-text">{{ fav_dir }}</code></div>
+        <div class="m-kv"><b>收藏日志</b><code id="fav-log-text">{{ fav_log }}</code></div>
+        <button id="btn-open-fav" class="btn btn-ghost btn-block" style="margin-top:10px">打开收藏文件夹</button>
+      </details>
+    </section>
+
+    <!-- ================= 设置 ================= -->
+    <section class="view hidden" id="view-settings">
+
+      <details class="m-panel">
+        <summary><span class="m-sum-label">磁盘占用</span><span class="badge" id="disk-drive">—</span></summary>
+        <div class="m-panel-body">
+          <div id="disk-detail"></div>
+          <button class="btn btn-outline btn-block" id="btn-disk-refresh" style="margin-top:12px">重新统计</button>
+        </div>
+      </details>
+
+      <details class="m-panel">
+        <summary>目录设置</summary>
+        <div class="m-panel-body">
+          <div class="field">
+            <label for="set-pdf">下载目录</label>
+            <input id="set-pdf" class="input" type="text" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="field" style="margin-top:12px">
+            <label for="set-fav">收藏目录</label>
+            <input id="set-fav" class="input" type="text" spellcheck="false" autocomplete="off">
+          </div>
+          <button id="btn-save-settings" class="btn btn-primary btn-block" style="margin-top:14px">保存并迁移内容</button>
+          <button id="btn-reset-settings" class="btn btn-ghost btn-block" style="margin-top:8px">恢复默认路径</button>
+        </div>
+      </details>
+
+      <details class="m-panel">
+        <summary><span class="m-sum-label">AVS 登录（可选）</span><span class="badge" id="avs-state">未配置</span></summary>
+        <div class="m-panel-body">
+          <div class="field">
+            <label for="set-avs">AVS 值</label>
+            <input id="set-avs" class="input" type="password" spellcheck="false" autocomplete="off"
+                   placeholder="留空 = 不登录，只下载公开内容">
+          </div>
+          <div class="row" style="margin-top:12px">
+            <button id="btn-save-avs" class="btn btn-outline grow">保存 AVS</button>
+            <button id="btn-clear-avs" class="btn btn-ghost">清空</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="m-panel" id="card-lan">
+        <summary><span class="m-sum-label">局域网访问</span></summary>
+        <div class="m-panel-body">
+          <div class="lan-line">
+            <code id="lan-url">—</code>
+            <button id="btn-lan-copy" class="btn btn-ghost btn-sm">复制</button>
+          </div>
+          <div class="lan-line lan-token-line">
+            <span>访问口令</span>
+            <b id="lan-token">—</b>
+            <button id="btn-lan-token" class="btn btn-ghost btn-sm">换一个</button>
+          </div>
+          <div class="lan-auto">
+            <span>允许局域网使用</span>
+            <button id="btn-lan-toggle" class="switch" role="switch"
+                    aria-checked="false" title="开启 / 关闭局域网访问"></button>
+          </div>
+          <div class="lan-auto">
+            <span>启动时自动开启</span>
+            <button id="btn-lan-default" class="switch" role="switch"
+                    aria-checked="false" title="下次启动程序时自动打开局域网访问"></button>
+          </div>
+          <div class="lan-auto">
+            <span>允许局域网移动设备删除和收藏</span>
+            <button id="btn-lan-write" class="switch" role="switch"
+                    aria-checked="false" title="允许局域网设备删除漫画、增删收藏（默认只能浏览）"></button>
+          </div>
+        </div>
+      </details>
+
+      <details class="m-panel">
+        <summary><span class="m-sum-label">关于与更新</span><span class="badge" id="app-version">v{{ version }}</span></summary>
+        <div class="m-panel-body">
+          <div class="row">
+            <button id="btn-open-project" class="btn btn-outline grow">打开项目主页</button>
+            <button id="btn-check-update" class="btn btn-primary grow">检查更新</button>
+          </div>
+          <div id="update-result" class="update-result hidden"></div>
+        </div>
+      </details>
+
+      <details class="m-panel m-danger">
+        <summary>清除所有下载数据</summary>
+        <div class="m-panel-body">
+          <div class="card-desc">删除两个目录里的全部漫画与日志，需连续确认两次，无法找回。</div>
+          <button id="btn-wipe" class="btn btn-danger btn-block">清除所有下载数据</button>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <!-- 底部标签栏 -->
+  <nav class="m-tabbar">
+    <a class="nav-item active" data-view="download">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3v12M7 11l5 5 5-5M5 20h14"/>
+      </svg>
+      <span>下载</span>
+    </a>
+    <a class="nav-item" data-view="favorites">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/>
+      </svg>
+      <span>收藏</span>
+    </a>
+    <a class="nav-item" data-view="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+      </svg>
+      <span>设置</span>
+    </a>
+  </nav>
+</div>
+
+<!-- 悬停放大的磁盘占用指示条（移动端不用，保留占位避免 JS 取空） -->
+<div id="disk-pop" class="disk-pop hidden">
+  <div class="disk-bar-fill">
+    <span class="seg seg-dir"></span><span class="seg seg-other"></span><span class="seg seg-free"></span>
+  </div>
+  <div class="disk-pop-legend">
+    <span id="disk-pop-title">—</span>
+    <span id="disk-pop-nums">—</span>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<!-- 全部标签 -->
+<div id="tag-modal" class="modal hidden">
+  <div class="modal-box" style="width:min(440px,100%)">
+    <div class="modal-head">
+      <h3>全部标签</h3>
+      <button id="tag-close" class="icon-btn" title="关闭">✕</button>
+    </div>
+    <div class="modal-body" style="padding:18px 20px">
+      <div class="pv-tags" id="tag-all-list"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="tag-ok" class="btn btn-primary">知道了</button>
+    </div>
+  </div>
+</div>
+
+<!-- 漫画详情 -->
+<div id="preview-modal" class="modal hidden">
+  <div class="modal-box m-modal">
+    <div class="modal-head">
+      <h3 id="pv-title">详情</h3>
+      <button id="pv-close" class="icon-btn" title="关闭">✕</button>
+    </div>
+    <div class="modal-body m-pv-body">
+      <div class="pv-cover-wrap m-pv-cover">
+        <img id="pv-cover" alt="封面">
+        <div id="pv-cover-fallback" class="pv-cover-fallback">载入中…</div>
+      </div>
+      <div class="pv-info m-pv-info">
+        <div class="pv-id" id="pv-id"></div>
+        <div class="pv-name" id="pv-name"></div>
+        <div class="pv-meta" id="pv-meta"></div>
+        <div class="pv-tags" id="pv-tags"></div>
+        <div class="pv-desc" id="pv-desc"></div>
+      </div>
+    </div>
+    <div class="modal-actions m-pv-actions">
+      <button id="pv-fav" class="btn btn-outline">收藏</button>
+      <button id="pv-delete" class="btn btn-danger">删除</button>
+      <button id="pv-download" class="btn btn-primary">打开</button>
+    </div>
+  </div>
+</div>
+
+<!-- 在线阅读：PDF 逐页渲染成图片，左右滑动翻页 -->
+<div id="reader" class="reader hidden">
+  <div class="rd-top">
+    <div class="rd-title" id="rd-title">阅读</div>
+  </div>
+
+  <div class="rd-stage" id="rd-stage">
+    <div class="rd-track" id="rd-body"></div>
+  </div>
+
+  <div class="rd-bar">
+    <button id="rd-dir" class="rd-dir" title="切换翻页方向">左滑翻页</button>
+    <div class="rd-count" id="rd-count">—</div>
+    <button id="rd-back" class="rd-back" title="返回主页">返回</button>
+  </div>
+</div>
+
+<script>
+  window.JM_LAYOUT = 'mobile';
+  window.JM_PATHS = {
+    pdf: {{ pdf_dir|tojson }},
+    fav: {{ fav_dir|tojson }},
+    defaults: { pdf: {{ default_pdf|tojson }}, fav: {{ default_fav|tojson }} }
+  };
+  window.JM_APP = {
+    version: {{ version|tojson }},
+    projectUrl: {{ project_url|tojson }},
+    releasesUrl: {{ releases_url|tojson }}
+  };
+</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -5,6 +5,9 @@
   const $ = (id) => document.getElementById(id);
   const PATHS = window.JM_PATHS || { pdf: '', fav: '', defaults: {} };
   const APPMETA = window.JM_APP || { version: '', projectUrl: '', releasesUrl: '' };
+  // 手机模板会把它设成 'mobile'，桌面模板没有这个变量
+  const IS_MOBILE = window.JM_LAYOUT === 'mobile';
+  const MAX_TAGS = IS_MOBILE ? 2 : 4;
 
   const STAR_OUT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>';
   const STAR_ON = '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3.5l2.6 5.3 5.9.9-4.2 4.1 1 5.8-5.3-2.8-5.3 2.8 1-5.8-4.2-4.1 5.9-.9z"/></svg>';
@@ -221,9 +224,12 @@
       '<div class="record-name">' + escapeHtml(r.name) + '</div>' +
       (r.author ? '<div class="record-author">作者：' + escapeHtml(r.author) + '</div>' : '') +
       ((r.tags && r.tags.length) ? '<div class="record-tags">' +
-        r.tags.slice(0, 4).map(function (tag) { return '<span>' + escapeHtml(tag) + '</span>'; }).join('') +
-        (r.tags.length > 4
-          ? '<button class="tag-more" data-key="' + escapeHtml(r.file) + '" data-tags="' + escapeHtml(r.tags.join('|')) + '" title="查看全部标签">查看更多</button>'
+        r.tags.slice(0, MAX_TAGS).map(function (tag) { return '<span>' + escapeHtml(tag) + '</span>'; }).join('') +
+        (r.tags.length > MAX_TAGS
+          ? (IS_MOBILE
+              // 手机端不显示「查看更多」，多出来的只报个数，点卡片就能看全部
+              ? '<span class="tag-rest">+' + (r.tags.length - MAX_TAGS) + '</span>'
+              : '<button class="tag-more" data-key="' + escapeHtml(r.file) + '" data-tags="' + escapeHtml(r.tags.join('|')) + '" title="查看全部标签">查看更多</button>')
           : '') +
         '</div>' : '') +
       '<div class="record-time">' + escapeHtml(r.time) +
@@ -299,6 +305,126 @@
     observeCovers();
   }
 
+  /* ---------------- 随机推荐 ---------------- */
+  const RANDOM_COUNT = { dl: 1, fav: 2 };     // 收藏页左列空，一次推两本
+  const randomPool = { dl: [], fav: [] };
+  const randomPick = { dl: [], fav: [] };
+  let randomTimer = null;
+  let randomCooldown = 0;                     // 刚换过视图时先别再自动换
+
+  function pickRandomItems(scope, count) {
+    const pool = randomPool[scope] || [];
+    if (!pool.length) return [];
+
+    const lastFiles = (randomPick[scope] || []).map(function (r) { return r.file; });
+    let candidates = pool.filter(function (r) { return lastFiles.indexOf(r.file) < 0; });
+    if (candidates.length < count) candidates = pool.slice();
+
+    const out = [];
+    const copy = candidates.slice();
+    while (out.length < count && copy.length) {
+      out.push(copy.splice(Math.floor(Math.random() * copy.length), 1)[0]);
+    }
+    return out;
+  }
+
+  function renderRandom(scope) {
+    const slot = $(scope + '-random-slot');
+    if (!slot) return;
+
+    const pool = randomPool[scope] || [];
+    if (!pool.length) {
+      slot.innerHTML = '<div class="random-empty">还没有记录，下载或收藏之后这里会随机推荐一本。</div>';
+      randomPick[scope] = [];
+      return;
+    }
+
+    const count = Math.min(RANDOM_COUNT[scope] || 1, pool.length);
+    const picks = pickRandomItems(scope, count);
+    randomPick[scope] = picks;
+
+    // 收藏页左列空间大，顺带把下载时间和标签也带上
+    const detailed = scope === 'fav';
+
+    slot.innerHTML = picks.map(function (pick) {
+      const cover = pick.exists === false ? '' :
+        '/api/cover?file=' + encodeURIComponent(pick.file) +
+        (pick.dir ? '&dir=' + encodeURIComponent(pick.dir) : '');
+
+      const meta = [
+        pick.author ? '作者：' + pick.author : '',
+        pick.likes ? '赞 ' + pick.likes : ''
+      ].filter(Boolean).join(' · ');
+
+      const timeText = detailed && pick.time ? pick.time : '';
+      const tags = detailed ? (pick.tags || []).slice(0, 3) : [];
+
+      return '<div class="random-item" data-file="' + escapeHtml(pick.file) + '" title="点击查看详情">' +
+        '<div class="random-cover">' +
+          (cover ? '<img src="' + escapeHtml(cover) + '" alt="">' : '') +
+        '</div>' +
+        '<div class="random-info">' +
+          '<div class="random-id">' + escapeHtml(pick.id) + '</div>' +
+          '<div class="random-name">' + escapeHtml(pick.name) + '</div>' +
+          (meta ? '<div class="random-meta">' + escapeHtml(meta) + '</div>' : '') +
+          (timeText ? '<div class="random-time">' + escapeHtml(timeText) + '</div>' : '') +
+          (tags.length
+            ? '<div class="random-tags">' +
+                tags.map(function (t) { return '<span>' + escapeHtml(t) + '</span>'; }).join('') +
+              '</div>'
+            : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function bindRandom() {
+    ['dl', 'fav'].forEach(function (scope) {
+      const slot = $(scope + '-random-slot');
+      if (slot) {
+        slot.addEventListener('click', function (e) {
+          const item = e.target.closest('.random-item');
+          if (!item) return;
+          const file = item.getAttribute('data-file');
+          const rec = (randomPick[scope] || []).filter(function (r) {
+            return r.file === file;
+          })[0];
+          if (rec) showRecordPreview(rec, scope);
+        });
+      }
+      const btn = $(scope + '-random-next');
+      if (btn) btn.addEventListener('click', function () { renderRandom(scope); });
+    });
+  }
+
+  // 页面上的任何操作都会重抽一次；点空白、点推荐卡片、点弹窗都不算
+  function scheduleRandomRefresh(e) {
+    if (Date.now() < randomCooldown) return;
+
+    if (e && e.type === 'click') {
+      const t = e.target;
+      if (!t || t === document.body) return;
+      if (t.closest && (t.closest('.stack-grow') || t.closest('.modal'))) return;
+      const cls = t.className;
+      if (typeof cls === 'string' &&
+          /(^|\s)(content|view|grid|stack|records|page-head)(\s|$)/.test(cls)) return;
+    }
+
+    if (randomTimer) clearTimeout(randomTimer);
+    randomTimer = setTimeout(function () {
+      randomTimer = null;
+      if (Date.now() < randomCooldown) return;   // 期间切过页，就别再换了
+      renderRandom('dl');
+      renderRandom('fav');
+    }, 1200);
+  }
+
+  function bindRandomTriggers() {
+    ['click', 'input', 'change', 'keydown'].forEach(function (ev) {
+      document.addEventListener(ev, scheduleRandomRefresh, true);
+    });
+  }
+
   /* ---------------- 数据加载 ---------------- */
   async function loadRecords() {
     const st = state.dl;
@@ -310,6 +436,12 @@
       const res = await fetch('/api/records?' + params.toString(), { cache: 'no-store' });
       const data = await res.json();
       renderInto($('dl-records'), $('dl-count'), $('dl-badge'), data.records || [], 'dl');
+
+      // 随机推荐用全量记录；搜索时保留上次那份全量
+      if (!st.q && st.scope === 'all') randomPool.dl = data.records || [];
+      else if (!randomPool.dl.length) randomPool.dl = data.records || [];
+      renderRandom('dl');
+      randomCooldown = Date.now() + 8000;
     } catch (e) {
       $('dl-records').innerHTML = '<div class="empty">读取记录失败：' + escapeHtml(e.message) + '</div>';
     }
@@ -325,6 +457,11 @@
       const res = await fetch('/api/favorites?' + params.toString(), { cache: 'no-store' });
       const data = await res.json();
       renderInto($('fav-records'), $('fav-count'), $('fav-badge'), data.records || [], 'fav');
+
+      if (!st.q && st.scope === 'all') randomPool.fav = data.records || [];
+      else if (!randomPool.fav.length) randomPool.fav = data.records || [];
+      renderRandom('fav');
+      randomCooldown = Date.now() + 8000;
 
       const banner = $('fav-warning');
       if (data.warning) {
@@ -445,6 +582,10 @@
       toggleFavorite(file, jmId, starred);
     } else if (event.target.closest('.trash')) {
       deleteRecord(file, jmId, scope);
+    } else if (IS_MOBILE) {
+      // 手机上点卡片任意位置都弹详情，不直接打开 PDF
+      const rec = recordIndex[file];
+      if (rec) showRecordPreview(rec, scope);
     } else if (event.target.closest('.record-main')) {
       openRecordFile(file, scope, dir);
     }
@@ -694,30 +835,280 @@
       fallback.textContent = '暂无封面';
     }
 
+    const cancelBtn = $('pv-cancel');
+    const mainBtn = $('pv-download');
+    const favBtn = $('pv-fav');
+    const delBtn = $('pv-delete');
+    const rec = options.record || null;
+
     if (options.openFile) {
-      $('pv-cancel').textContent = '关闭';
-      $('pv-download').textContent = '打开';
-      $('pv-download').onclick = function () {
+      if (cancelBtn) cancelBtn.textContent = '关闭';
+      mainBtn.textContent = '打开';
+      mainBtn.onclick = function () {
         box.classList.add('hidden');
-        openRecordFile(options.file, 'dl', options.dir || '');
+        if (IS_MOBILE && options.record) {
+          openReader(options.record);        // 手机上「打开」= 在线左右翻页看
+        } else {
+          openRecordFile(options.file, options.scope || 'dl', options.dir || '');
+        }
       };
     } else {
-      $('pv-cancel').textContent = '取消';
-      $('pv-download').textContent = '开始下载';
-      $('pv-download').onclick = function () {
+      if (cancelBtn) cancelBtn.textContent = '取消';
+      mainBtn.textContent = '开始下载';
+      mainBtn.onclick = function () {
         box.classList.add('hidden');
         $('album-id').value = album.id || '';
         doDownload();
       };
     }
 
+    // 收藏 / 删除只在手机模板里有（桌面模板没有这两个按钮）
+    if (favBtn) {
+      if (rec) {
+        const starred = options.scope === 'fav' ? true : !!rec.fav;
+        favBtn.classList.remove('hidden');
+        favBtn.textContent = starred ? '取消收藏' : '收藏';
+        favBtn.onclick = function () {
+          box.classList.add('hidden');
+          toggleFavorite(rec.file, rec.id, starred);
+        };
+      } else {
+        favBtn.classList.add('hidden');
+      }
+    }
+
+    if (delBtn) {
+      if (rec) {
+        delBtn.classList.remove('hidden');
+        delBtn.onclick = function () {
+          box.classList.add('hidden');
+          deleteRecord(rec.file, rec.id, options.scope || 'dl');
+        };
+      } else {
+        delBtn.classList.add('hidden');
+      }
+    }
+
     box.classList.remove('hidden');
   }
 
 
+  /* ---------------- 在线阅读：左右翻页 ---------------- */
+  const RD_DIR_KEY = 'jm-read-dir';
+
+  const readerState = {
+    rec: null, pages: [], index: 0, total: 0,
+    dir: 'left', pushed: false, touch: null,
+  };
+
+  function readerUrl(rec, n) {
+    return '/api/page?file=' + encodeURIComponent(rec.file) +
+      (rec.dir ? '&dir=' + encodeURIComponent(rec.dir) : '') +
+      '&n=' + n;
+  }
+
+  function updateReaderCount() {
+    const label = $('rd-count');
+    if (!label) return;
+    if (!readerState.total) { label.textContent = '—'; return; }
+    label.textContent = (readerState.index + 1) + ' / ' + readerState.total;
+  }
+
+  function paintReaderDir() {
+    const btn = $('rd-dir');
+    // 按钮显示的是「点了会变成什么」，不是当前状态
+    if (btn) btn.textContent = readerState.dir === 'left' ? '切换右滑翻页' : '切换左滑翻页';
+
+    // 日漫方向：用 flex order 把页码倒过来排，下一页就落在上一页左边
+    const total = readerState.total;
+    readerState.pages.forEach(function (img, i) {
+      const page = img.parentNode;
+      if (!page) return;
+      page.style.order = String(readerState.dir === 'left' ? (total - 1 - i) : i);
+    });
+  }
+
+  // 第 n 页在横向排列里的位置：日漫方向要倒过来数
+  function pageSlot(n) {
+    return readerState.dir === 'left'
+      ? (readerState.total - 1 - n)
+      : n;
+  }
+
+  // 直接用元素自身的 offsetLeft，避免「页宽 × 页数」累加出来的亚像素误差
+  function pageOffset(n) {
+    const img = readerState.pages[n];
+    const page = img && img.parentNode;
+    if (page && typeof page.offsetLeft === 'number') return page.offsetLeft;
+    const stage = $('rd-stage');
+    return pageSlot(n) * (stage ? stage.clientWidth : 0);
+  }
+
+  function loadPage(img) {
+    if (!img || img.dataset.src) return;
+    img.dataset.src = '1';
+    img.onerror = function () { img.setAttribute('data-failed', '1'); };
+    img.src = readerUrl(readerState.rec, Number(img.dataset.page));
+  }
+
+  function ensureLoaded(n) {
+    for (let i = n - 1; i <= n + 1; i++) {
+      if (readerState.pages[i]) loadPage(readerState.pages[i]);
+    }
+  }
+
+  function moveTrack(px, animate) {
+    const track = $('rd-body');
+    if (!track) return;
+    track.style.transition = animate
+      ? 'transform .28s cubic-bezier(.32,.72,0,1)'
+      : 'none';
+    track.style.transform = 'translate3d(' + px + 'px,0,0)';
+  }
+
+  function goToPage(n, animate) {
+    if (!readerState.total) return;
+    n = Math.max(0, Math.min(n, readerState.total - 1));
+    readerState.index = n;
+
+    moveTrack(-pageOffset(n), animate !== false);
+    updateReaderCount();
+    ensureLoaded(n);
+  }
+
+  function closeReader() {
+    const box = $('reader');
+    if (!box) return;
+    box.classList.add('hidden');
+
+    readerState.rec = null;
+    readerState.pages = [];
+    readerState.total = 0;
+    readerState.index = 0;
+    readerState.touch = null;
+
+    const track = $('rd-body');
+    if (track) { track.innerHTML = ''; track.style.transform = ''; }
+  }
+
+  function exitReader() {
+    if (readerState.pushed) {
+      readerState.pushed = false;
+      history.back();        // 让 popstate 收尾，历史里那条也一并弹掉
+    } else {
+      closeReader();
+    }
+  }
+
+  async function openReader(rec) {
+    const box = $('reader');
+    const track = $('rd-body');
+    if (!box || !track) { toast('当前页面不支持在线阅读', true); return; }
+
+    $('rd-title').textContent = rec.name || rec.file;
+    $('rd-count').textContent = '载入中…';
+    track.innerHTML = '';
+    track.style.transform = '';
+    box.classList.remove('hidden');
+
+    let info;
+    try {
+      const res = await fetch('/api/pdf-info?file=' + encodeURIComponent(rec.file) +
+        (rec.dir ? '&dir=' + encodeURIComponent(rec.dir) : ''), { cache: 'no-store' });
+      info = await res.json();
+    } catch (e) {
+      info = { ok: false, error: e.message };
+    }
+
+    if (!info.ok) {
+      box.classList.add('hidden');
+      // 在线渲染不可用就退回原来的打开方式，功能不丢
+      toast(info.error || '无法在线阅读，改用电脑上的程序打开', true);
+      openRecordFile(rec.file, 'dl', rec.dir || '');
+      return;
+    }
+
+    readerState.rec = rec;
+    readerState.total = info.pages;
+    readerState.index = 0;
+    readerState.pages = [];
+
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < info.pages; i++) {
+      const page = document.createElement('div');
+      page.className = 'rd-page';
+      const img = document.createElement('img');
+      img.dataset.page = String(i);
+      img.alt = '';
+      page.appendChild(img);
+      readerState.pages.push(img);
+      frag.appendChild(page);
+    }
+    track.appendChild(frag);
+
+    paintReaderDir();
+    updateReaderCount();
+    goToPage(0, false);
+
+    // 单独记一条历史：浏览器返回键只关阅读器，不会把主页一起退掉
+    history.pushState({ jmReader: 1 }, '');
+    readerState.pushed = true;
+  }
+
+  function bindReaderTouch() {
+    const stage = $('rd-stage');
+    const track = $('rd-body');
+    if (!stage || !track) return;
+
+    stage.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) return;
+      readerState.touch = {
+        x: e.touches[0].clientX,
+        y: e.touches[0].clientY,
+        moved: false,
+      };
+      track.style.transition = 'none';
+    }, { passive: true });
+
+    stage.addEventListener('touchmove', function (e) {
+      const t = readerState.touch;
+      if (!t) return;
+      const dx = e.touches[0].clientX - t.x;
+      const dy = e.touches[0].clientY - t.y;
+      if (!t.moved && Math.abs(dx) < Math.abs(dy)) return;   // 竖向手势不拦
+      t.moved = true;
+      moveTrack(-pageOffset(readerState.index) + dx, false);
+    }, { passive: true });
+
+    const finish = function (e) {
+      const t = readerState.touch;
+      readerState.touch = null;
+      if (!t) return;
+
+      const touch = e.changedTouches && e.changedTouches[0];
+      const dx = (touch ? touch.clientX : t.x) - t.x;
+      const dy = (touch ? touch.clientY : t.y) - t.y;
+
+      if (!t.moved || Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy)) {
+        goToPage(readerState.index, true);
+        return;
+      }
+
+      // 日漫方向下一页在左边，所以要往回滑；常规方向正好相反
+      const toNext = readerState.dir === 'left' ? dx > 0 : dx < 0;
+      goToPage(readerState.index + (toNext ? 1 : -1), true);
+    };
+
+    stage.addEventListener('touchend', finish, { passive: true });
+    stage.addEventListener('touchcancel', finish, { passive: true });
+  }
+
   /* ---------------- 排序切换 ---------------- */
   // 按钮显示的是「点击后会切换成什么」，当前状态不会造成歧义
   function sortLabel(current) {
+    if (IS_MOBILE) {
+      return current === 'likes' ? '按时间' : '按点赞';
+    }
     return current === 'likes' ? '切换为按时间排序' : '切换为按点赞排序';
   }
 
@@ -774,8 +1165,8 @@
 
 
 
-  /* ---------------- 记录项：查看全部标签 ---------------- */
-  function showRecordPreview(r) {
+  /* ---------------- 记录项：漫画详情弹窗 ---------------- */
+  function showRecordPreview(r, scope) {
     const coverSrc = r.exists === false ? '' :
       '/api/cover?file=' + encodeURIComponent(r.file) +
       (r.dir ? '&dir=' + encodeURIComponent(r.dir) : '');
@@ -789,7 +1180,13 @@
       views: r.views || '',
       tags: r.tags || [],
       description: '',
-    }, coverSrc, { openFile: true, file: r.file, dir: r.dir || '' });
+    }, coverSrc, {
+      openFile: true,
+      file: r.file,
+      dir: r.dir || '',
+      scope: scope || 'dl',
+      record: r,
+    });
   }
 
   let tagTip = null;
@@ -876,7 +1273,11 @@
   function bindPreview() {
     $('btn-preview').addEventListener('click', doPreview);
     $('pv-close').addEventListener('click', function () { $('preview-modal').classList.add('hidden'); });
-    $('pv-cancel').addEventListener('click', function () { $('preview-modal').classList.add('hidden'); });
+    // 手机模板用右上角 ✕ 关闭，没有独立的「关闭」按钮
+    const cancelBtn = $('pv-cancel');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function () { $('preview-modal').classList.add('hidden'); });
+    }
     $('preview-modal').addEventListener('click', function (e) {
       if (e.target === $('preview-modal')) { $('preview-modal').classList.add('hidden'); }
     });
@@ -1137,6 +1538,125 @@
     toast('已填入默认路径，需点「保存并迁移内容」才会生效');
   }
 
+  /* ---------------- 局域网访问 ---------------- */
+  let lanState = null;
+
+  function paintLan(data) {
+    lanState = data;
+
+    const on = !!data.enabled;
+    const def = !!data.default;
+
+    const ips = data.ips || [];
+    const urlEl = $('lan-url');
+    if (ips.length) {
+      urlEl.textContent = 'http://' + ips[0] + ':' + data.port;
+      urlEl.classList.toggle('off', !on);
+    } else {
+      urlEl.textContent = '未检测到局域网地址';
+      urlEl.classList.add('off');
+    }
+    $('lan-token').textContent = data.token || '—';
+
+    const sw = $('btn-lan-toggle');
+    if (sw) {
+      sw.classList.toggle('on', on);
+      sw.setAttribute('aria-checked', on ? 'true' : 'false');
+      sw.title = on ? '局域网访问已开启，点击关闭' : '局域网访问已关闭，点击开启';
+    }
+
+    const defSw = $('btn-lan-default');
+    if (defSw) {
+      defSw.classList.toggle('on', def);
+      defSw.setAttribute('aria-checked', def ? 'true' : 'false');
+      defSw.title = def ? '每次启动都会自动开启局域网访问' : '启动时沿用上次的开关状态';
+    }
+
+    const writeSw = $('btn-lan-write');
+    if (writeSw) {
+      const allow = !!data.allow_write;
+      writeSw.classList.toggle('on', allow);
+      writeSw.setAttribute('aria-checked', allow ? 'true' : 'false');
+      writeSw.title = allow
+        ? '手机可以删除漫画、增删收藏，点击收回权限'
+        : '手机只能浏览，点击允许删除和收藏';
+    }
+  }
+
+  async function loadLan() {
+    try {
+      const res = await fetch('/api/lan', { cache: 'no-store' });
+      const data = await res.json();
+      if (!data.ok) {
+        if (data.local_only || data.need_login) {
+          $('card-lan').classList.add('hidden');
+        }
+        return;
+      }
+      $('card-lan').classList.remove('hidden');
+      paintLan(data);
+    } catch (e) {
+      $('card-lan').classList.add('hidden');
+    }
+  }
+
+  async function toggleLan() {
+    const willOpen = !(lanState && lanState.enabled);
+    const data = await postJson('/api/lan', { enabled: willOpen });
+    if (!data.ok) { toast(data.error || '操作失败', true); return; }
+
+    paintLan(data);
+    toast(willOpen ? '已开启，手机连同一 Wi-Fi 打开上面的地址' : '局域网访问已关闭');
+  }
+
+  async function toggleLanDefault() {
+    const willOn = !(lanState && lanState.default);
+    const data = await postJson('/api/lan', { default: willOn });
+    if (!data.ok) { toast(data.error || '设置失败', true); return; }
+
+    paintLan(data);
+    toast(willOn ? '已设置：下次启动自动开启局域网访问' : '已设置：下次启动沿用上次的开关状态');
+  }
+
+  async function toggleLanWrite() {
+    const willOn = !(lanState && lanState.allow_write);
+    if (willOn && !confirm(
+      '允许手机删除和收藏？\n\n' +
+      '打开后，局域网里知道口令的设备可以：\n' +
+      '· 删除电脑上的漫画文件和记录\n' +
+      '· 增加或取消收藏\n\n' +
+      '「清除所有下载数据」仍然只能在电脑本机执行。')) return;
+
+    const data = await postJson('/api/lan', { allow_write: willOn });
+    if (!data.ok) { toast(data.error || '设置失败', true); return; }
+
+    paintLan(data);
+    toast(willOn ? '手机现在可以删除和收藏了' : '手机已恢复为只能浏览');
+  }
+
+  async function resetLanToken() {
+    if (!confirm('重新生成访问口令？\n\n已经在手机上登录过的设备，需要重新输入新口令。')) return;
+
+    const data = await postJson('/api/lan', { reset_token: true });
+    if (!data.ok) { toast(data.error || '生成失败', true); return; }
+    paintLan(data);
+    toast('新口令：' + (data.token || ''));
+  }
+
+  async function copyLanUrl() {
+    if (!lanState || !lanState.enabled) { toast('先开启局域网访问', true); return; }
+    const urls = lanState.urls || [];
+    if (!urls.length) { toast('没检测到局域网地址，检查网络连接', true); return; }
+
+    const text = urls[0];
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('已复制：' + text);
+    } catch (e) {
+      toast(text);
+    }
+  }
+
   /* ---------------- 视图切换 ---------------- */
   function switchView(view) {
     state.view = view;
@@ -1153,6 +1673,7 @@
     if (view === 'settings') {
       loadSettings();
       loadDisk(true);
+      loadLan();
     } else {
       refreshCurrent();
     }
@@ -1210,6 +1731,50 @@
   $('btn-clear-avs').addEventListener('click', clearAvs);
   $('set-avs').addEventListener('keydown', function (e) { if (e.key === 'Enter') saveAvs(); });
 
+  $('btn-lan-token').addEventListener('click', resetLanToken);
+  $('btn-lan-copy').addEventListener('click', copyLanUrl);
+
+  // 手机模板里主开关放在 <summary> 里，点它别让折叠面板跟着展开
+  $('btn-lan-toggle').addEventListener('click', function (e) {
+    e.stopPropagation();
+    toggleLan();
+  });
+
+  const lanDefSw = $('btn-lan-default');
+  if (lanDefSw) lanDefSw.addEventListener('click', toggleLanDefault);
+
+  const lanWriteSw = $('btn-lan-write');
+  if (lanWriteSw) lanWriteSw.addEventListener('click', toggleLanWrite);
+
+  const rdBack = $('rd-back');
+  if (rdBack) rdBack.addEventListener('click', exitReader);
+
+  const rdDirBtn = $('rd-dir');
+  if (rdDirBtn) {
+    try {
+      const saved = localStorage.getItem(RD_DIR_KEY);
+      if (saved === 'left' || saved === 'right') readerState.dir = saved;
+    } catch (e) { }
+    rdDirBtn.addEventListener('click', function () {
+      readerState.dir = readerState.dir === 'left' ? 'right' : 'left';
+      try { localStorage.setItem(RD_DIR_KEY, readerState.dir); } catch (e) { }
+      paintReaderDir();
+      goToPage(readerState.index, false);
+      toast(readerState.dir === 'left' ? '日漫方向：下一页在左边' : '常规方向：下一页在右边');
+    });
+  }
+
+  // 浏览器 / 手机返回键：只关阅读器，不把主页一起退掉
+  window.addEventListener('popstate', function () {
+    const box = $('reader');
+    if (box && !box.classList.contains('hidden')) {
+      readerState.pushed = false;
+      closeReader();
+    }
+  });
+
+  bindReaderTouch();
+
   $('btn-check-update').addEventListener('click', checkUpdate);
   $('btn-open-project').addEventListener('click', function () { openUrl(APPMETA.projectUrl); });
   $('update-result').addEventListener('click', function (e) {
@@ -1233,17 +1798,24 @@
 
   $('btn-theme').addEventListener('click', toggleTheme);
 
-  $('addr-pill').addEventListener('click', async function () {
-    const text = $('addr-text').textContent.trim();
-    try {
-      await navigator.clipboard.writeText(text);
-      toast('已复制：' + text);
-    } catch (e) {
-      toast(text);
-    }
-  });
+  const addrPill = $('addr-pill');
+  if (addrPill) {
+    addrPill.addEventListener('click', async function () {
+      const text = $('addr-text').textContent.trim();
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('已复制：' + text);
+      } catch (e) {
+        toast(text);
+      }
+    });
+  }
 
-  window.addEventListener('resize', function () { $('disk-pop').classList.add('hidden'); });
+  window.addEventListener('resize', function () {
+    $('disk-pop').classList.add('hidden');
+    const box = $('reader');
+    if (box && !box.classList.contains('hidden')) goToPage(readerState.index, false);
+  });
 
   /* ---------------- 启动 ---------------- */
   function maybeShowDiskHover() {
@@ -1256,6 +1828,8 @@
     } catch (e) { }
   }
 
+  bindRandom();
+  bindRandomTriggers();
   bindAlbumHit();
   syncThemeIcon();
 

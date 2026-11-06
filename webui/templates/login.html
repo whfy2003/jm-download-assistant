@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>访问验证 · JM 下载助手</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
+  .login-card {
+    width: 340px; max-width: 100%;
+    padding: 30px 28px 26px;
+  }
+  .login-card h1 { font-size: 19px; font-weight: 700; margin-bottom: 8px; }
+  .login-card .card-desc { margin-bottom: 20px; line-height: 1.7; }
+  .login-card .input {
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 22px; letter-spacing: 8px;
+  }
+  .login-card .btn { margin-top: 14px; }
+  .login-err {
+    margin-top: 12px; min-height: 18px;
+    font-size: 12.5px; color: var(--danger);
+  }
+  .login-foot {
+    margin-top: 6px;
+    font-size: 12px; color: var(--text-muted);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <section class="card login-card">
+    <h1>JM 下载助手</h1>
+    <p class="card-desc">这台电脑开启了局域网访问。请输入电脑上「设置 → 局域网访问」里显示的 6 位口令。</p>
+
+    <form id="login-form" autocomplete="off">
+      <input id="login-code" class="input" type="text" inputmode="numeric"
+             maxlength="6" placeholder="000000" autocomplete="one-time-code">
+      <button class="btn btn-primary btn-block" type="submit" id="login-submit">进入</button>
+    </form>
+
+    <p class="login-err" id="login-err"></p>
+    <p class="login-foot">仅在同一 Wi-Fi 下的手机、平板需要输入</p>
+  </section>
+
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem('jm-theme');
+    if (t === 'dark' || t === 'light') document.documentElement.setAttribute('data-theme', t);
+  } catch (e) { }
+
+  var form = document.getElementById('login-form');
+  var code = document.getElementById('login-code');
+  var errEl = document.getElementById('login-err');
+  var btn = document.getElementById('login-submit');
+
+  // 只保留数字
+  code.addEventListener('input', function () {
+    this.value = this.value.replace(/\D/g, '').slice(0, 6);
+  });
+
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    errEl.textContent = '';
+    var value = code.value.trim();
+    if (value.length !== 6) { errEl.textContent = '口令是 6 位数字'; return; }
+
+    btn.disabled = true;
+    try {
+      var res = await fetch('/api/lan-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: value })
+      });
+      var data = await res.json();
+      if (data.ok) {
+        location.replace('/');
+        return;
+      }
+      errEl.textContent = data.error || '口令不对';
+      code.select();
+    } catch (err) {
+      errEl.textContent = '连接失败，请确认电脑上的程序还在运行';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  code.focus();
+})();
+</script>
+</body>
+</html>

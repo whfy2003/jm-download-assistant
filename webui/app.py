@@ -18,18 +18,23 @@ JM 下载助手 —— 本地网页端（Flask）
 
 启动：见同目录上一级的 start-jm-web.cmd
 """
+import hashlib
 import io
 import json
 import logging
 import os
 import random
+import re
 import shutil
+import socket
+import subprocess
 import sys
 import threading
 import time
 from datetime import datetime
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import (Flask, Response, jsonify, redirect, render_template,
+                   request, send_file)
 
 # ----------------------------------------------------------------------------
 # 路径与运行参数
@@ -56,7 +61,7 @@ else:
     DEFAULT_PDF_DIR = r'E:\漫画\JM'                        # 默认下载目录
     DEFAULT_FAV_DIR = r'E:\([AAAAA])'                     # 默认收藏夹
 
-HOST = '127.0.0.1'
+HOST = '0.0.0.0'      # 始终监听所有网卡，开关只决定是否放行局域网请求
 PORT = 8080
 RECENT_LIMIT = 500          # “搜索”只在这最近 500 条记录里找
 MAX_RUNTIME_LOGS = 200      # 状态区保留的最近运行日志行数
@@ -66,7 +71,7 @@ DISK_CACHE_SECONDS = 20     # 磁盘占用统计缓存
 # 版本与项目信息（「检查更新」用）
 # 发新版本时只要同步改 APP_VERSION，与 GitHub Release 的 tag 比较即可。
 # ----------------------------------------------------------------------------
-APP_VERSION = '1.0.3'
+APP_VERSION = '1.0.4'
 PROJECT_URL = 'https://github.com/whfy2003/jm-download-assistant'
 RELEASES_URL = PROJECT_URL + '/releases/latest'
 LATEST_RELEASE_API = ('https://api.github.com/repos/whfy2003/'
@@ -81,7 +86,9 @@ app = Flask(__name__,
 # ----------------------------------------------------------------------------
 _settings_lock = threading.Lock()
 _settings = {'pdf_dir': DEFAULT_PDF_DIR, 'fav_dir': DEFAULT_FAV_DIR, 'avs': '',
-             'app_version': '', 'domains': []}
+             'app_version': '', 'domains': [],
+             'lan_enabled': False, 'lan_token': '', 'lan_default': False,
+             'lan_allow_write': False}
 
 
 def _load_settings():
@@ -101,6 +108,14 @@ def _load_settings():
             _settings['app_version'] = data['app_version'].strip()
         if isinstance(data.get('domains'), list):
             _settings['domains'] = [str(x).strip() for x in data['domains'] if str(x).strip()]
+        if isinstance(data.get('lan_enabled'), bool):
+            _settings['lan_enabled'] = data['lan_enabled']
+        if isinstance(data.get('lan_default'), bool):
+            _settings['lan_default'] = data['lan_default']
+        if isinstance(data.get('lan_allow_write'), bool):
+            _settings['lan_allow_write'] = data['lan_allow_write']
+        if isinstance(data.get('lan_token'), str):
+            _settings['lan_token'] = data['lan_token'].strip()
     except Exception as e:
         print('读取 settings.json 失败：%s' % e)
 
@@ -111,6 +126,255 @@ def _save_settings():
             json.dump(_settings, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print('写入 settings.json 失败：%s' % e)
+
+
+# ----------------------------------------------------------------------------
+# 局域网访问：来源判定 / 口令 / IP 探测
+#   默认只监听 127.0.0.1；打开开关后监听 0.0.0.0，
+#   局域网设备必须先输口令，且只能做浏览、下载、收藏这类操作。
+# ----------------------------------------------------------------------------
+LAN_COOKIE = 'jm_lan_auth'
+LAN_FAIL_LIMIT = 5          # 连续输错 5 次
+LAN_FAIL_SECONDS = 120      # 锁 2 分钟
+
+# 只有电脑本机才能调的接口：清空、改配置、在桌面弹窗
+LAN_LOCAL_ONLY = {
+    ('GET', '/api/lan'),
+    ('POST', '/api/lan'),
+    ('POST', '/api/wipe'),
+    ('POST', '/api/settings'),
+    ('POST', '/api/open-file'),
+    ('POST', '/api/open-folder'),
+    ('POST', '/api/open-url'),
+}
+
+# 默认同样只限本机；打开「允许手机删除和收藏」之后才放给局域网
+LAN_WRITE_ON_REQUEST = {
+    ('POST', '/api/delete'),
+    ('POST', '/api/favorite'),
+}
+
+_lan_fail_lock = threading.Lock()
+_lan_fail = {}              # ip -> [连续失败次数, 解锁时间戳]
+
+
+def _new_lan_token():
+    """6 位数字口令，手机上容易输入。"""
+    return '%06d' % random.randint(0, 999999)
+
+
+def _client_ip():
+    return (request.remote_addr or '').strip()
+
+
+def _is_local_client():
+    return _client_ip() in ('127.0.0.1', '::1', 'localhost')
+
+
+def _lan_ip_list():
+    """列出本机可能被局域网访问到的 IPv4，默认出口地址排最前。"""
+    found = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # UDP connect 不真正发包，只让系统选出默认出口地址
+            s.connect(('223.5.5.5', 53))
+            found.append(s.getsockname()[0])
+        finally:
+            s.close()
+    except Exception:
+        pass
+
+    # 再补上其它网卡（比如同时连着 Wi-Fi 和网线）
+    try:
+        out = subprocess.run(['ipconfig'], capture_output=True, timeout=3).stdout
+        text = out.decode('gbk', 'ignore')
+        for ip in re.findall(r'IPv4[^\d]*(\d{1,3}(?:\.\d{1,3}){3})', text):
+            found.append(ip)
+    except Exception:
+        pass
+
+    clean = []
+    for ip in found:
+        if not ip or ip.startswith('127.') or ip.startswith('169.254.') or ip == '0.0.0.0':
+            continue
+        if ip not in clean:
+            clean.append(ip)
+
+    # 只留下与默认出口同网段的地址，滤掉 WSL、虚拟机之类的杂地址
+    if len(clean) > 1:
+        head = clean[0].rsplit('.', 1)[0]
+        clean = [clean[0]] + [ip for ip in clean[1:] if ip.rsplit('.', 1)[0] == head]
+    return clean
+
+
+def _lan_state():
+    with _settings_lock:
+        enabled = bool(_settings.get('lan_enabled'))
+        default = bool(_settings.get('lan_default'))
+        allow_write = bool(_settings.get('lan_allow_write'))
+        token = _settings.get('lan_token') or ''
+    ips = _lan_ip_list()
+    return {
+        'enabled': enabled,
+        'default': default,
+        'allow_write': allow_write,
+        'token': token,
+        'ips': ips,
+        'port': PORT,
+        'local': _is_local_client(),
+    }
+
+
+def _lan_lock_wait(ip):
+    """返回还需要等待的秒数，0 表示没被锁。"""
+    with _lan_fail_lock:
+        item = _lan_fail.get(ip)
+        if not item:
+            return 0
+        until = item[1] or 0
+        if until > time.time():
+            return int(until - time.time()) + 1
+        if until:
+            _lan_fail.pop(ip, None)
+        return 0
+
+
+def _lan_note_fail(ip):
+    with _lan_fail_lock:
+        item = _lan_fail.get(ip) or [0, 0]
+        item[0] = int(item[0]) + 1
+        if item[0] >= LAN_FAIL_LIMIT:
+            item[0] = 0
+            item[1] = time.time() + LAN_FAIL_SECONDS
+        _lan_fail[ip] = item
+
+
+def _lan_note_ok(ip):
+    with _lan_fail_lock:
+        _lan_fail.pop(ip, None)
+
+
+@app.before_request
+def _lan_guard():
+    """局域网来的请求：没开就直接拒绝，开了先登录，登录后也只放开浏览类操作。"""
+    if _is_local_client():
+        return None
+
+    path = request.path
+    if path.startswith('/static/') or path in ('/favicon.ico',):
+        return None
+
+    if not _settings.get('lan_enabled'):
+        if path.startswith('/api/'):
+            return jsonify(ok=False, lan_off=True,
+                           error='这台电脑没有开启局域网访问'), 403
+        return Response(
+            '<!doctype html><meta charset="utf-8">'
+            '<title>未开启局域网访问</title>'
+            '<div style="font:15px/1.8 \'Microsoft YaHei\',sans-serif;'
+            'max-width:420px;margin:18vh auto;padding:0 24px;color:#3a4653">'
+            '<h1 style="font-size:18px">未开启局域网访问</h1>'
+            '<p>请在电脑上的「设置 → 局域网访问」里打开开关，再刷新本页。</p></div>',
+            status=403, mimetype='text/html')
+
+    if path in ('/login', '/api/lan-login'):
+        return None
+
+    token = _settings.get('lan_token') or ''
+    given = (request.cookies.get(LAN_COOKIE) or '').strip()
+    if not given:
+        given = (request.headers.get('X-JM-Token') or '').strip()
+
+    if token and given == token:
+        if (request.method, path) in LAN_LOCAL_ONLY:
+            if path.startswith('/api/'):
+                return jsonify(ok=False, local_only=True,
+                               error='该操作只能在电脑本机执行'), 403
+            return '该操作只能在电脑本机执行', 403
+        # 删除 / 收藏默认也只给本机，除非电脑上打开了「允许手机删除和收藏」
+        if (request.method, path) in LAN_WRITE_ON_REQUEST \
+                and not _settings.get('lan_allow_write'):
+            return jsonify(ok=False, local_only=True,
+                           error='电脑上没开「允许手机删除和收藏」'), 403
+        return None
+
+    if path.startswith('/api/'):
+        return jsonify(ok=False, need_login=True, error='需要访问口令'), 401
+    return redirect('/login')
+
+
+@app.route('/login')
+def page_lan_login():
+    if not _settings.get('lan_enabled') or _is_local_client():
+        return redirect('/')
+    return render_template('login.html', port=PORT)
+
+
+@app.route('/api/lan-login', methods=['POST'])
+def api_lan_login():
+    data = request.get_json(silent=True) or {}
+    code = str(data.get('token') or '').strip()
+    ip = _client_ip()
+
+    wait = _lan_lock_wait(ip)
+    if wait > 0:
+        return jsonify(ok=False, error='试错次数过多，请 %d 秒后再试' % wait), 429
+
+    token = _settings.get('lan_token') or ''
+    if not token:
+        return jsonify(ok=False, error='尚未开启局域网访问'), 400
+
+    if code != token:
+        _lan_note_fail(ip)
+        return jsonify(ok=False, error='访问口令不对'), 401
+
+    _lan_note_ok(ip)
+    resp = jsonify(ok=True)
+    resp.set_cookie(LAN_COOKIE, token, max_age=30 * 24 * 3600,
+                    httponly=True, samesite='Lax')
+    return resp
+
+
+@app.route('/api/lan', methods=['GET', 'POST'])
+def api_lan():
+    if request.method == 'GET':
+        return jsonify(ok=True, **_lan_state())
+
+    data = request.get_json(silent=True) or {}
+    changed = False
+    with _settings_lock:
+        if 'enabled' in data:
+            want = bool(data.get('enabled'))
+            if want and not (_settings.get('lan_token') or ''):
+                _settings['lan_token'] = _new_lan_token()
+            if bool(_settings.get('lan_enabled')) != want:
+                _settings['lan_enabled'] = want
+                changed = True
+        if 'default' in data:
+            # 「启动时自动开启」：写默认值，同时让本次立即生效
+            want = bool(data.get('default'))
+            if want and not (_settings.get('lan_token') or ''):
+                _settings['lan_token'] = _new_lan_token()
+            if bool(_settings.get('lan_default')) != want:
+                _settings['lan_default'] = want
+                changed = True
+            if bool(_settings.get('lan_enabled')) != want:
+                _settings['lan_enabled'] = want
+                changed = True
+        if 'allow_write' in data:
+            # 是否允许手机删除文件 / 增删收藏
+            want = bool(data.get('allow_write'))
+            if bool(_settings.get('lan_allow_write')) != want:
+                _settings['lan_allow_write'] = want
+                changed = True
+        if data.get('reset_token'):
+            _settings['lan_token'] = _new_lan_token()
+            changed = True
+    if changed:
+        _save_settings()
+    return jsonify(ok=True, changed=changed, **_lan_state())
+
 
 
 # ----------------------------------------------------------------------------
@@ -341,6 +605,74 @@ _disk_cache = {'ts': 0.0, 'data': None}
 
 # PDF 首页封面缓存（文件名 → base64 PNG），避免每次轮询都重新渲染
 _cover_cache = {}
+
+
+# ----------------------------------------------------------------------------
+# 在线阅读：把 PDF 每页渲染成 JPEG
+#   缓存落在 数据目录/缓存/阅读/<hash>/0000.jpg，只保留最近阅读的 3 本。
+#   「最近」按目录的修改时间判断，程序重启后依然有效。
+# ----------------------------------------------------------------------------
+READER_DIR = os.path.join(APP_DIR, '缓存', '阅读')
+READER_KEEP = 3             # 只缓存最近阅读的 3 本
+READER_DPI = 150            # 手机屏够用，体积和耗时大约是 300dpi 的一半
+READER_QUALITY = 80
+
+_reader_lock = threading.Lock()
+
+
+def _reader_key(filename):
+    return hashlib.sha1(filename.encode('utf-8')).hexdigest()[:16]
+
+
+def _reader_dir_for(filename):
+    return os.path.join(READER_DIR, _reader_key(filename))
+
+
+def _resolve_pdf(filename, dir_opt=''):
+    """把「文件名 + 目录」还原成磁盘上的 PDF 绝对路径，找不到返回 None。"""
+    base_dir = get_pdf_dir()
+    if dir_opt:
+        allowed = {os.path.abspath(get_pdf_dir()).lower(),
+                   os.path.abspath(get_fav_dir()).lower()}
+        candidate = os.path.abspath(dir_opt)
+        if candidate.lower() in allowed:
+            base_dir = candidate
+    path = os.path.join(base_dir, filename)
+    return path if os.path.isfile(path) else None
+
+
+def _reader_prune(keep_dir=None):
+    """只留最近访问的 READER_KEEP 本，其余整目录删掉。"""
+    try:
+        if not os.path.isdir(READER_DIR):
+            return
+        items = []
+        for name in os.listdir(READER_DIR):
+            p = os.path.join(READER_DIR, name)
+            if os.path.isdir(p):
+                items.append((os.path.getmtime(p), p))
+        items.sort()
+        while len(items) > READER_KEEP:
+            _, path = items.pop(0)
+            if keep_dir and os.path.abspath(path) == os.path.abspath(keep_dir):
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+    except Exception as e:
+        print('清理阅读缓存失败：%s' % e)
+
+
+def _render_pdf_page(pdf_path, index):
+    """渲染第 index 页为 JPEG 字节串。"""
+    import pymupdf
+
+    with _reader_lock:
+        with pymupdf.open(pdf_path) as doc:
+            if index < 0 or index >= doc.page_count:
+                raise ValueError('页码超出范围（共 %d 页）' % doc.page_count)
+            page = doc.load_page(index)
+            zoom = READER_DPI / 72.0
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
+            return pix.tobytes('jpeg', jpg_quality=READER_QUALITY)
 
 
 def _dir_size(path):
@@ -983,10 +1315,30 @@ def _run_download(jm_id):
 # ----------------------------------------------------------------------------
 # 路由 · 页面
 # ----------------------------------------------------------------------------
+_MOBILE_UA_RE = re.compile(
+    r'mobile|android|iphone|ipod|ipad|ipad|windows\s*phone|harmonyos|'
+    r'micromessenger|miuibrowser|huaweibrowser', re.I)
+
+
+def _wants_mobile():
+    """手机/平板请求返回移动端模板，电脑浏览器仍用桌面模板。
+
+    带 ?layout=mobile / ?layout=desktop 可以手动指定，方便调试和强制切换。
+    """
+    forced = (request.args.get('layout') or '').strip().lower()
+    if forced == 'mobile':
+        return True
+    if forced == 'desktop':
+        return False
+    ua = request.headers.get('User-Agent') or ''
+    return bool(_MOBILE_UA_RE.search(ua))
+
+
 @app.route('/')
 def index():
+    template = 'index_mobile.html' if _wants_mobile() else 'index.html'
     return render_template(
-        'index.html',
+        template,
         pdf_dir=get_pdf_dir(), log_file=get_log_file(),
         fav_dir=get_fav_dir(), fav_log=get_fav_log(),
         default_pdf=DEFAULT_PDF_DIR, default_fav=DEFAULT_FAV_DIR,
@@ -1264,6 +1616,89 @@ def api_cover():
                     headers={'Cache-Control': 'max-age=86400'})
 
 
+@app.route('/api/pdf-info')
+def api_pdf_info():
+    """在线阅读前的探测：页数、首页尺寸，同时把这本登记为「最近阅读」。"""
+    filename = _safe_name(request.args.get('file'))
+    if not filename:
+        return jsonify(ok=False, error='文件名无效'), 400
+
+    path = _resolve_pdf(filename, request.args.get('dir'))
+    if not path:
+        return jsonify(ok=False, error='文件不存在'), 404
+
+    try:
+        import pymupdf
+    except ImportError:
+        return jsonify(ok=False, error='未安装 PyMuPDF，无法在线阅读'), 503
+
+    try:
+        with pymupdf.open(path) as doc:
+            pages = doc.page_count
+            if pages <= 0:
+                return jsonify(ok=False, error='PDF 没有页面'), 400
+            rect = doc.load_page(0).rect
+            width = rect.width or 612.0
+            height = rect.height or 792.0
+    except Exception as e:
+        return jsonify(ok=False, error='%s: %s' % (type(e).__name__, e)), 500
+
+    target = _reader_dir_for(filename)
+    try:
+        os.makedirs(target, exist_ok=True)
+        os.utime(target, None)          # 刷新「最近访问」时间
+    except Exception:
+        pass
+    _reader_prune(target)
+
+    return jsonify(ok=True, pages=pages,
+                   width=round(width, 2), height=round(height, 2),
+                   dpi=READER_DPI)
+
+
+@app.route('/api/page')
+def api_page():
+    """返回 PDF 某页的 JPEG；已渲染过就直接读缓存文件。"""
+    filename = _safe_name(request.args.get('file'))
+    if not filename:
+        return jsonify(ok=False, error='文件名无效'), 400
+
+    try:
+        index = int(request.args.get('n') or 0)
+    except Exception:
+        return jsonify(ok=False, error='页码无效'), 400
+
+    path = _resolve_pdf(filename, request.args.get('dir'))
+    if not path:
+        return jsonify(ok=False, error='文件不存在'), 404
+
+    target = _reader_dir_for(filename)
+    cached = os.path.join(target, '%04d.jpg' % index)
+    if os.path.isfile(cached):
+        try:
+            os.utime(target, None)
+        except Exception:
+            pass
+        return send_file(cached, mimetype='image/jpeg', conditional=True)
+
+    try:
+        data = _render_pdf_page(path, index)
+    except ImportError:
+        return jsonify(ok=False, error='未安装 PyMuPDF，无法在线阅读'), 503
+    except Exception as e:
+        return jsonify(ok=False, error='%s: %s' % (type(e).__name__, e)), 500
+
+    try:
+        os.makedirs(target, exist_ok=True)
+        with open(cached, 'wb') as f:
+            f.write(data)
+    except Exception as e:
+        print('写入阅读缓存失败：%s' % e)
+
+    return Response(data, mimetype='image/jpeg',
+                    headers={'Cache-Control': 'max-age=86400'})
+
+
 # ----------------------------------------------------------------------------
 # 路由 · 设置与磁盘
 # ----------------------------------------------------------------------------
@@ -1275,8 +1710,10 @@ def api_disk():
 @app.route('/api/settings', methods=['GET', 'POST'])
 def api_settings():
     if request.method == 'GET':
+        # 局域网设备不回传 AVS 登录凭证
+        avs = get_avs() if _is_local_client() else ''
         return jsonify(ok=True, pdf_dir=get_pdf_dir(), fav_dir=get_fav_dir(),
-                       avs=get_avs(), version=APP_VERSION,
+                       avs=avs, version=APP_VERSION,
                        disk=_disk_snapshot())
 
     data = request.get_json(silent=True) or {}
@@ -1577,6 +2014,8 @@ def api_wipe():
 
     _cover_cache.clear()
     _disk_cache['data'] = None
+    # 阅读缓存是漫画的衍生物，一起清掉，免得留下指向已删 PDF 的残页
+    shutil.rmtree(READER_DIR, ignore_errors=True)
     with _state_lock:
         _state['logs'] = []
 
@@ -1612,9 +2051,26 @@ def main():
         except Exception as e:
             print('创建目录失败 %s：%s' % (d, e))
 
+    # 「启动时自动开启」打开就每次启动都开；关着则沿用上次保存的状态
+    if _settings.get('lan_default') and not _settings.get('lan_enabled'):
+        with _settings_lock:
+            _settings['lan_enabled'] = True
+        _save_settings()
+    lan_on = bool(_settings.get('lan_enabled'))
+    if lan_on and not (_settings.get('lan_token') or ''):
+        with _settings_lock:
+            _settings['lan_token'] = _new_lan_token()
+        _save_settings()
+
     print('=' * 60)
     print('JM 下载助手 已启动  v%s' % APP_VERSION)
-    print('  访问地址 : http://%s:%d' % (HOST, PORT))
+    print('  访问地址 : http://127.0.0.1:%d' % PORT)
+    if lan_on:
+        for ip in _lan_ip_list():
+            print('  局域网   : http://%s:%d  （口令 %s）'
+                  % (ip, PORT, _settings.get('lan_token')))
+    else:
+        print('  局域网   : 未开启（设置页可打开，改完即时生效）')
     print('  数据目录 : %s' % APP_DIR)
     print('  PDF 目录 : %s' % get_pdf_dir())
     print('  下载日志 : %s' % get_log_file())

@@ -104,6 +104,7 @@
         </div>
 
         <div class="grid">
+          <div class="stack">
           <section class="card card-pad">
             <div class="card-head"><h2>下载任务</h2></div>
             <div class="card-desc">输入编号后开始下载。运行中会锁定按钮。</div>
@@ -176,7 +177,6 @@
             </div>
 
             <p class="hint" style="margin-top:12px">
-              搜索只会显示匹配编号的记录；点击「显示全部」恢复默认列表。<br>
               点击「搜索」仅搜索最近 500 条记录；点击「搜索全部」将搜索所有记录，但会消耗更多时间。
             </p>
 
@@ -187,6 +187,15 @@
 
             <button id="btn-open-folder" class="btn btn-ghost btn-block" style="margin-top:12px">打开下载文件夹</button>
           </section>
+
+          <section class="card card-pad stack-grow" id="dl-random">
+            <div class="card-head">
+              <h2>随机推荐</h2>
+              <button class="btn btn-ghost btn-sm" id="dl-random-next" title="换一部">换一部</button>
+            </div>
+            <div class="random-slot" id="dl-random-slot"></div>
+          </section>
+          </div>
 
           <section class="card card-pad">
             <div class="card-head">
@@ -223,6 +232,7 @@
         <div class="warn-banner hidden" id="fav-warning"></div>
 
         <div class="grid">
+          <div class="stack">
           <section class="card card-pad">
             <div class="card-head"><h2>收藏夹</h2></div>
             <div class="card-desc">在「下载」页点击记录左侧的星标即可收藏到这里。</div>
@@ -250,6 +260,15 @@
 
             <button id="btn-open-fav" class="btn btn-ghost btn-block" style="margin-top:16px">打开收藏文件夹</button>
           </section>
+
+          <section class="card card-pad stack-grow" id="fav-random">
+            <div class="card-head">
+              <h2>随机推荐</h2>
+              <button class="btn btn-ghost btn-sm" id="fav-random-next" title="换一部">换一部</button>
+            </div>
+            <div class="random-slot" id="fav-random-slot"></div>
+          </section>
+          </div>
 
           <section class="card card-pad">
             <div class="card-head">
@@ -347,21 +366,50 @@
                           </p>
                         </section>
 
-              <section class="card card-pad">
-                          <div class="card-head">
-                            <h2>清除所有下载数据</h2>
-                            <span class="badge badge-danger">危险操作</span>
-                          </div>
-                          <div class="card-desc">删除下载目录与收藏目录里的全部漫画和日志，并清空图片工作区。</div>
+              <div class="settings-col">
+                <section class="card card-pad">
+                            <div class="card-head">
+                              <h2>清除所有下载数据</h2>
+                              <span class="badge badge-danger">危险</span>
+                            </div>
+                            <div class="card-desc">删除两个目录里的全部漫画与日志，清空图片工作区。需连续确认两次，清空后无法找回。</div>
 
-                          <button id="btn-wipe" class="btn btn-danger btn-block">清除所有下载数据</button>
+                            <button id="btn-wipe" class="btn btn-danger btn-block">清除所有下载数据</button>
+                          </section>
 
-                          <p class="hint" style="margin-top:14px">
-                            点一下会先弹出两次确认：<br>
-                            第一次说明「删除后无法找回」，第二次再问「确定删除」。<br>
-                            清空后可以照常继续下载，不影响程序本身。
-                          </p>
-                        </section>
+                <section class="card card-pad" id="card-lan">
+                            <div class="card-head">
+                              <h2>局域网访问</h2>
+                            </div>
+                            <div class="card-desc">同一 Wi-Fi 下的手机、平板用浏览器访问这台电脑。</div>
+
+                            <div class="lan-line">
+                              <code id="lan-url">—</code>
+                              <button id="btn-lan-copy" class="btn btn-ghost btn-sm">复制</button>
+                            </div>
+                            <div class="lan-line lan-token-line">
+                              <span>访问口令</span>
+                              <b id="lan-token">—</b>
+                              <button id="btn-lan-token" class="btn btn-ghost btn-sm">换一个</button>
+                            </div>
+
+                            <div class="lan-auto">
+                              <span>允许局域网使用</span>
+                              <button id="btn-lan-toggle" class="switch" role="switch"
+                                      aria-checked="false" title="开启 / 关闭局域网访问"></button>
+                            </div>
+                            <div class="lan-auto">
+                              <span>启动时自动开启</span>
+                              <button id="btn-lan-default" class="switch" role="switch"
+                                      aria-checked="false" title="下次启动程序时自动打开局域网访问"></button>
+                            </div>
+                            <div class="lan-auto">
+                              <span>允许局域网移动设备删除和收藏</span>
+                              <button id="btn-lan-write" class="switch" role="switch"
+                                      aria-checked="false" title="允许局域网设备删除漫画、增删收藏（默认只能浏览）"></button>
+                            </div>
+                          </section>
+              </div>
 
               <section class="card card-pad">
                           <div class="card-head">
