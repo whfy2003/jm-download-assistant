@@ -1141,6 +1141,10 @@
       const st = await res.json();
       if (!st.running) {
         if (detailTimer) { clearTimeout(detailTimer); detailTimer = null; }
+        if (!st.total) {
+          toast('所有详情都是最新的（超过 7 天的会在下次启动时自动更新）');
+          return;
+        }
         const ends = st.done > 0;
         if (ends) {
           detailCacheReset();
@@ -1726,6 +1730,14 @@
   $('btn-save-settings').addEventListener('click', saveSettings);
   $('btn-reset-settings').addEventListener('click', resetSettings);
   $('btn-disk-refresh').addEventListener('click', function () { loadDisk(true); toast('已重新统计磁盘占用'); });
+
+  const exportDetailBtn = $('btn-export-details');
+  if (exportDetailBtn) {
+    exportDetailBtn.addEventListener('click', function () {
+      window.open('/api/details/export', '_blank');
+      toast('正在导出漫画详情…');
+    });
+  }
 
   $('btn-save-avs').addEventListener('click', saveAvs);
   $('btn-clear-avs').addEventListener('click', clearAvs);

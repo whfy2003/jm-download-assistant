@@ -35,3 +35,6 @@ _download/
 *.swp
 Thumbs.db
 desktop.ini
+
+# ---- 源码版启动器产物（exe 由 launch_source.py 打包生成）----
+启动源码版.exe

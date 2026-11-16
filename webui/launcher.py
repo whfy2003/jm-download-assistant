@@ -392,7 +392,25 @@ def run_wizard():
 # ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
+def _redirect_output():
+    """打包成无窗口 exe 后 sys.stdout 是 None，print 会直接抛异常。
+    这里把输出接到 程序目录/logs/server.log，日志照样能查。"""
+    if sys.stdout is not None and sys.stderr is not None:
+        return None
+    try:
+        log_dir = os.path.join(APP_DIR, 'logs')
+        os.makedirs(log_dir, exist_ok=True)
+        handle = open(os.path.join(log_dir, 'server.log'), 'a',
+                      encoding='utf-8', errors='replace')
+        sys.stdout = handle
+        sys.stderr = handle
+        return handle
+    except Exception:
+        return None
+
+
 def main():
+    _redirect_output()
     os.chdir(APP_DIR)
     os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
     os.environ.setdefault('PYTHONUTF8', '1')

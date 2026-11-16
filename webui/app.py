@@ -31,7 +31,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, send_file)
@@ -71,7 +71,7 @@ DISK_CACHE_SECONDS = 20     # 磁盘占用统计缓存
 # 版本与项目信息（「检查更新」用）
 # 发新版本时只要同步改 APP_VERSION，与 GitHub Release 的 tag 比较即可。
 # ----------------------------------------------------------------------------
-APP_VERSION = '1.0.4'
+APP_VERSION = '1.1'
 PROJECT_URL = 'https://github.com/whfy2003/jm-download-assistant'
 RELEASES_URL = PROJECT_URL + '/releases/latest'
 LATEST_RELEASE_API = ('https://api.github.com/repos/whfy2003/'
@@ -867,54 +867,189 @@ def _remove_log_entries(log_path, jm_id, filename):
 
 
 # ----------------------------------------------------------------------------
-# 漫画详情（下载目录/日志/<编号>.txt）
+# 漫画详情（下载目录/日志/漫画详情.db，SQLite）
+#   一部漫画一行：编号 / 标题 / 作者 / 点赞 / 浏览 / 页数 / 标签 / 更新
+#   旧的 日志/<编号>.txt 在首次访问时自动并进来，然后挪到「旧格式备份」子目录
 # ----------------------------------------------------------------------------
 DETAIL_SUBDIR = '日志'
+DETAIL_DB = '漫画详情.db'
+DETAIL_LEGACY_DIR = '旧格式备份'
+DETAIL_COLUMNS = ['编号', '标题', '作者', '点赞', '浏览', '页数', '标签', '更新']
+DETAIL_REFRESH_DAYS = 7          # 详情超过这么久没更新，启动时会自动刷一次
+
 _detail_cache = {}
+_detail_lock = threading.Lock()
+_detail_ready = False
+_detail_ready_lock = threading.Lock()
 
 
 def _detail_dir():
     return os.path.join(get_pdf_dir(), DETAIL_SUBDIR)
 
 
-def _detail_path(jm_id):
-    jm_id = str(jm_id or '').strip()
-    if not jm_id or jm_id == '-':
-        return None
-    safe = ''.join(c for c in jm_id if c.isdigit()) or jm_id
-    return os.path.join(_detail_dir(), safe + '.txt')
+def _detail_db_path():
+    return os.path.join(_detail_dir(), DETAIL_DB)
+
+
+def _normalize_id(jm_id):
+    raw = str(jm_id or '').strip()
+    if not raw or raw == '-':
+        return ''
+    return ''.join(c for c in raw if c.isdigit()) or raw
+
+
+def _db_connect():
+    """开一个连接；sqlite3 的连接不能跨线程共用，所以每次现开。"""
+    import sqlite3
+
+    path = _detail_db_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path, timeout=15)
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS details ('
+        '  id TEXT PRIMARY KEY,'
+        '  title TEXT, author TEXT, likes TEXT, views TEXT,'
+        '  pages TEXT, tags TEXT, updated TEXT)')
+    return conn
+
+
+def _row_to_detail(row):
+    def cell(i):
+        return '' if row[i] is None else str(row[i])
+
+    return {
+        'id': cell(0),
+        'title': cell(1),
+        'author': cell(2),
+        'likes': cell(3),
+        'views': cell(4),
+        'pages': cell(5),
+        'tags': [x for x in cell(6).split('、') if x],
+        'updated': cell(7),
+    }
+
+
+def _migrate_legacy_details():
+    """把 日志/*.txt 并进数据库，然后归档到「旧格式备份」。返回迁移条数。"""
+    folder = _detail_dir()
+    if not os.path.isdir(folder):
+        return 0
+
+    files = [n for n in os.listdir(folder) if n.lower().endswith('.txt')]
+    if not files:
+        return 0
+
+    backup = os.path.join(folder, DETAIL_LEGACY_DIR)
+    try:
+        os.makedirs(backup, exist_ok=True)
+    except Exception:
+        backup = ''
+
+    moved = 0
+    with _detail_lock:
+        conn = _db_connect()
+        try:
+            for name in files:
+                src = os.path.join(folder, name)
+                try:
+                    data = {}
+                    with open(src, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or ':' not in line:
+                                continue
+                            key, value = line.split(':', 1)
+                            data[key.strip()] = value.strip()
+
+                    jm_id = _normalize_id(data.get('编号') or os.path.splitext(name)[0])
+                    if not jm_id:
+                        continue
+
+                    conn.execute(
+                        'INSERT OR IGNORE INTO details'
+                        '(id,title,author,likes,views,pages,tags,updated) '
+                        'VALUES(?,?,?,?,?,?,?,?)',
+                        (jm_id, data.get('标题', ''), data.get('作者', ''),
+                         data.get('点赞', ''), data.get('浏览', ''),
+                         data.get('页数', ''), data.get('标签', ''),
+                         data.get('更新', '')))
+
+                    if backup:
+                        try:
+                            shutil.move(src, os.path.join(backup, name))
+                            moved += 1
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print('迁移详情 %s 失败：%s' % (name, e))
+            conn.commit()
+        finally:
+            conn.close()
+
+    if moved:
+        print('  旧格式详情 : 已合并 %d 个 txt 到 %s' % (moved, DETAIL_DB))
+    return moved
+
+
+def _ensure_detail_db():
+    """第一次用到详情时做一次迁移，之后不再检查。"""
+    global _detail_ready
+    if _detail_ready:
+        return
+    with _detail_ready_lock:
+        if _detail_ready:
+            return
+        _detail_ready = True          # 先打标记，避免并发重复迁移
+    try:
+        _migrate_legacy_details()
+    except Exception as e:
+        print('初始化详情数据库失败：%s' % e)
+
+
+def _reset_detail_state():
+    """换了下载目录之后，缓存和迁移标记都要重来。"""
+    global _detail_ready
+    _detail_cache.clear()
+    _detail_ready = False
 
 
 def _save_detail(detail):
-    """把一部漫画的详情写成 日志/<编号>.txt。"""
-    jm_id = str(detail.get('id') or '').strip()
-    path = _detail_path(jm_id)
-    if not path:
+    """把一部漫画的详情写进 SQLite（新增或覆盖同一编号）。"""
+    _ensure_detail_db()
+
+    jm_id = _normalize_id(detail.get('id'))
+    if not jm_id:
         return False
+
+    values = (
+        jm_id,
+        str(detail.get('title') or ''),
+        str(detail.get('author') or ''),
+        str(detail.get('likes') or ''),
+        str(detail.get('views') or ''),
+        str(detail.get('pages') or ''),
+        '、'.join(detail.get('tags') or []),
+        _now(),
+    )
+
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        lines = [
-            '编号: %s' % jm_id,
-            '标题: %s' % (detail.get('title') or ''),
-            '作者: %s' % (detail.get('author') or ''),
-            '点赞: %s' % (detail.get('likes') or ''),
-            '浏览: %s' % (detail.get('views') or ''),
-            '页数: %s' % (detail.get('pages') or ''),
-            '标签: %s' % '、'.join(detail.get('tags') or []),
-            '更新: %s' % _now(),
-        ]
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(lines) + '\n')
-        _detail_cache[jm_id] = {
-            'id': jm_id,
-            'title': detail.get('title') or '',
-            'author': detail.get('author') or '',
-            'likes': detail.get('likes') or '',
-            'views': detail.get('views') or '',
-            'pages': detail.get('pages') or '',
-            'tags': list(detail.get('tags') or []),
-            'updated': _now(),
-        }
+        with _detail_lock:
+            conn = _db_connect()
+            try:
+                conn.execute(
+                    'INSERT INTO details(id,title,author,likes,views,pages,tags,updated) '
+                    'VALUES(?,?,?,?,?,?,?,?) '
+                    'ON CONFLICT(id) DO UPDATE SET '
+                    '  title=excluded.title, author=excluded.author, likes=excluded.likes,'
+                    '  views=excluded.views, pages=excluded.pages, tags=excluded.tags,'
+                    '  updated=excluded.updated',
+                    values)
+                conn.commit()
+            finally:
+                conn.close()
+        _detail_cache[jm_id] = _row_to_detail(values)
         return True
     except Exception as e:
         print('写入详情失败 %s：%s' % (jm_id, e))
@@ -922,38 +1057,62 @@ def _save_detail(detail):
 
 
 def _read_detail(jm_id):
-    """读取 日志/<编号>.txt；没有就返回 None（带内存缓存）。"""
-    jm_id = str(jm_id or '').strip()
+    """按编号读详情；没有就返回 None（带内存缓存）。"""
+    _ensure_detail_db()
+
+    jm_id = _normalize_id(jm_id)
+    if not jm_id:
+        return None
     if jm_id in _detail_cache:
         return _detail_cache[jm_id]
 
-    path = _detail_path(jm_id)
     result = None
-    if path and os.path.isfile(path):
-        try:
-            data = {}
-            with open(path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or ':' not in line:
-                        continue
-                    key, value = line.split(':', 1)
-                    data[key.strip()] = value.strip()
-            result = {
-                'id': data.get('编号', jm_id),
-                'title': data.get('标题', ''),
-                'author': data.get('作者', ''),
-                'likes': data.get('点赞', ''),
-                'views': data.get('浏览', ''),
-                'pages': data.get('页数', ''),
-                'tags': [x for x in (data.get('标签') or '').split('、') if x],
-                'updated': data.get('更新', ''),
-            }
-        except Exception:
-            result = None
+    try:
+        with _detail_lock:
+            conn = _db_connect()
+            try:
+                row = conn.execute(
+                    'SELECT id,title,author,likes,views,pages,tags,updated '
+                    'FROM details WHERE id=?', (jm_id,)).fetchone()
+            finally:
+                conn.close()
+        if row:
+            result = _row_to_detail(row)
+    except Exception as e:
+        print('读取详情失败 %s：%s' % (jm_id, e))
 
     _detail_cache[jm_id] = result
     return result
+
+
+def _is_stale_detail(detail):
+    """详情要不要刷：没有记录，或者「更新」已经超过 DETAIL_REFRESH_DAYS 天。"""
+    if not detail:
+        return True
+    text = str(detail.get('updated') or '').strip()
+    if not text:
+        return True
+    try:
+        when = datetime.strptime(text, '%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return True
+    return (datetime.now() - when) >= timedelta(days=DETAIL_REFRESH_DAYS)
+
+
+def _fetch_and_save_detail(client, jm_id):
+    """抓一部漫画的详情并写库，成功返回 True。"""
+    album = client.get_album_detail(jm_id)
+    authors = getattr(album, 'authors', None) or []
+    tags = getattr(album, 'tags', None) or []
+    return _save_detail({
+        'id': str(getattr(album, 'album_id', jm_id) or jm_id),
+        'title': getattr(album, 'name', '') or '',
+        'author': '、'.join(authors) if authors else getattr(album, 'author', ''),
+        'likes': getattr(album, 'likes', ''),
+        'views': getattr(album, 'views', ''),
+        'pages': int(getattr(album, 'page_count', 0) or 0),
+        'tags': [str(x) for x in tags],
+    })
 
 
 def _attach_detail(item):
@@ -1298,6 +1457,24 @@ def _run_download(jm_id):
         title = _newest_pdf_name(before) or getattr(album, 'name', '') or jm_id
         _append_record_pair(get_log_file(), jm_id, title)
         _cleanup_empty_dirs(WORK_DIR)
+
+        # 下载完顺手把详情存进库，省得还要手动点「详情刷新」
+        try:
+            authors = getattr(album, 'authors', None) or []
+            tags = getattr(album, 'tags', None) or []
+            _save_detail({
+                'id': str(getattr(album, 'album_id', jm_id) or jm_id),
+                'title': getattr(album, 'name', '') or title,
+                'author': '、'.join(authors) if authors else getattr(album, 'author', ''),
+                'likes': getattr(album, 'likes', ''),
+                'views': getattr(album, 'views', ''),
+                'pages': int(getattr(album, 'page_count', 0) or 0),
+                'tags': [str(x) for x in tags],
+            })
+            _push_log('[详情] 已记录作者 / 标签 / 点赞')
+        except Exception as e:
+            _push_log('[详情] 保存失败：%s' % e)
+
         ok, message = True, '下载完成'
         _progress_update(phase='done', percent=100, note='')
     except Exception as e:
@@ -1445,7 +1622,8 @@ def _refresh_details_worker():
                 if jm_id and jm_id != '-' and jm_id not in ids:
                     ids.append(jm_id)
 
-        todo = [i for i in ids if _read_detail(i) is None]
+        # 没有详情的补上；有但超过 7 天没刷的也顺手更新一次
+        todo = [i for i in ids if _is_stale_detail(_read_detail(i))]
         _detail_refresh.update({'total': len(todo), 'done': 0, 'error': ''})
 
         if not todo:
@@ -1457,18 +1635,7 @@ def _refresh_details_worker():
         for index, jm_id in enumerate(todo):
             _detail_refresh['current'] = jm_id
             try:
-                album = client.get_album_detail(jm_id)
-                authors = getattr(album, 'authors', None) or []
-                tags = getattr(album, 'tags', None) or []
-                _save_detail({
-                    'id': str(album.album_id),
-                    'title': album.name,
-                    'author': '、'.join(authors) if authors else getattr(album, 'author', ''),
-                    'likes': getattr(album, 'likes', ''),
-                    'views': getattr(album, 'views', ''),
-                    'pages': int(getattr(album, 'page_count', 0) or 0),
-                    'tags': [str(x) for x in tags],
-                })
+                _fetch_and_save_detail(client, jm_id)
             except Exception as e:
                 _detail_refresh['error'] = '%s: %s' % (jm_id, e)
             _detail_refresh['done'] = index + 1
@@ -1478,6 +1645,48 @@ def _refresh_details_worker():
     finally:
         _detail_refresh['running'] = False
         _detail_refresh['current'] = ''
+
+
+def _auto_refresh_details_worker():
+    """启动后台跑一次：把「更新」超过 DETAIL_REFRESH_DAYS 天的详情刷一遍。"""
+    try:
+        time.sleep(25)              # 先让服务稳定，别跟正在跑的下载抢网络
+        _ensure_detail_db()
+
+        with _detail_lock:
+            conn = _db_connect()
+            try:
+                rows = conn.execute('SELECT id, updated FROM details').fetchall()
+            finally:
+                conn.close()
+
+        stale = []
+        for row in rows:
+            jm_id = str(row[0] or '').strip()
+            if jm_id and _is_stale_detail({'updated': row[1] or ''}):
+                stale.append(jm_id)
+
+        if not stale:
+            return
+
+        print('  自动更新   : %d 部详情超过 %d 天，后台开始刷新'
+              % (len(stale), DETAIL_REFRESH_DAYS))
+
+        option = _build_option()
+        client = option.build_jm_client()
+
+        ok = 0
+        for jm_id in stale:
+            try:
+                if _fetch_and_save_detail(client, jm_id):
+                    ok += 1
+            except Exception as e:
+                print('  自动更新 %s 失败：%s' % (jm_id, e))
+            time.sleep(random.uniform(0.1, 2.0))
+
+        print('  自动更新   : 完成 %d / %d 部，下一轮 7 天后' % (ok, len(stale)))
+    except Exception as e:
+        print('自动更新详情失败：%s' % e)
 
 
 @app.route('/api/refresh-details', methods=['POST'])
@@ -1495,6 +1704,50 @@ def api_refresh_details():
 @app.route('/api/refresh-details/status')
 def api_refresh_details_status():
     return jsonify(ok=True, **(dict(_detail_refresh)))
+
+
+@app.route('/api/details/export')
+def api_details_export():
+    """把详情库导出一份 Excel，方便不装数据库工具时直接看。"""
+    _ensure_detail_db()
+
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return jsonify(ok=False, error='未安装 openpyxl，无法导出 Excel'), 503
+
+    try:
+        with _detail_lock:
+            conn = _db_connect()
+            try:
+                rows = conn.execute(
+                    'SELECT id,title,author,likes,views,pages,tags,updated '
+                    'FROM details ORDER BY id').fetchall()
+            finally:
+                conn.close()
+    except Exception as e:
+        return jsonify(ok=False, error='%s: %s' % (type(e).__name__, e)), 500
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '漫画详情'
+    ws.append(DETAIL_COLUMNS)
+    for r in rows:
+        ws.append([r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]])
+
+    for idx, width in enumerate([12, 56, 20, 10, 12, 8, 42, 20], start=1):
+        ws.column_dimensions[chr(64 + idx)].width = width
+    ws.freeze_panes = 'A2'
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = '漫画详情_%s.xlsx' % datetime.now().strftime('%Y%m%d_%H%M')
+    return send_file(
+        buf,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=filename)
 
 
 @app.route('/api/preview')
@@ -1732,6 +1985,7 @@ def api_settings():
         moves['pdf'] = result
         with _settings_lock:
             _settings['pdf_dir'] = os.path.abspath(new_pdf)
+        _reset_detail_state()          # 详情库跟着目录走，缓存要重来
         changed = True
 
     if new_fav and os.path.abspath(new_fav) != os.path.abspath(get_fav_dir()):
@@ -2080,6 +2334,9 @@ def main():
     print('  设置文件 : %s' % SETTINGS_FILE)
     print('  关闭本窗口即停止服务')
     print('=' * 60)
+    # 每周一轮：后台把「更新」超过 7 天的详情刷一遍（不阻塞启动）
+    threading.Thread(target=_auto_refresh_details_worker, daemon=True).start()
+
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
 
 
