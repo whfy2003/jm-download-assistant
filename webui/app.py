@@ -71,7 +71,7 @@ DISK_CACHE_SECONDS = 20     # 磁盘占用统计缓存
 # 版本与项目信息（「检查更新」用）
 # 发新版本时只要同步改 APP_VERSION，与 GitHub Release 的 tag 比较即可。
 # ----------------------------------------------------------------------------
-APP_VERSION = '1.1'
+APP_VERSION = '1.2'
 PROJECT_URL = 'https://github.com/whfy2003/jm-download-assistant'
 RELEASES_URL = PROJECT_URL + '/releases/latest'
 LATEST_RELEASE_API = ('https://api.github.com/repos/whfy2003/'
